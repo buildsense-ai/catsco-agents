@@ -1,0 +1,10 @@
+{
+  "schema": "catsco.service-agent.v1",
+  "slug": "not-broken",
+  "name": "Broken Fixture",
+  "prompt": { "system": "system-prompt.md" },
+  "model": { "primary": { "provider": "anthropic", "model": "fixture-model" }, "fallbacks": [] },
+  "behavior": {},
+  "skills": [],
+  "knowledge": { "files": [] }
+}

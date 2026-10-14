@@ -1,0 +1,10 @@
+{
+  "schema": "catsco.service-agent.v1",
+  "slug": "mini",
+  "name": "Mini Fixture",
+  "prompt": { "system": "system-prompt.md" },
+  "model": { "primary": { "provider": "anthropic", "model": "fixture-model" }, "fallbacks": [] },
+  "behavior": { "async_threshold_seconds": 30, "max_run_seconds": 60 },
+  "skills": [],
+  "knowledge": { "files": [] }
+}

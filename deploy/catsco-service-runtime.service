@@ -1,0 +1,22 @@
+[Unit]
+Description=catsco-agents service runtime (CatsCo custom agent executor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=catsco
+Group=catsco
+WorkingDirectory=/opt/catsco-agents/runtime
+# 必填 env（平台地址/实例 token）+ 可选（relay 地址/agent slug/并发等），见 docs/service-runtime.md
+EnvironmentFile=/opt/catsco-agents/env/runtime.env
+ExecStart=/usr/local/lib/nodejs/current/bin/node dist/service/main.js
+Restart=always
+RestartSec=5
+# 优雅退出：SIGTERM → 守护进程停止 claim、abort 剩余（宽限由 CATS_SERVICE_SHUTDOWN_GRACE_MS 控制，超时兜底 60s）
+KillSignal=SIGTERM
+TimeoutStopSec=60
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

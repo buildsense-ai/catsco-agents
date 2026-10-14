@@ -11,6 +11,7 @@
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
+    "service": "node dist/service/main.js",
     "start:cli": "node dist/index.js",
     "electron:dev": "npm run build && node scripts/start-electron-dev.mjs",
     "electron:build": "npm run build && npm run prepare:runtime && npm run prune:electron-optionals && electron-builder --config electron-builder.config.cjs --publish never",
@@ -81,6 +82,7 @@
     "ws": "8.21.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@types/deasync": "^0.1.5",
     "@types/express": "^5.0.6",
     "@types/glob": "^8.1.0",
