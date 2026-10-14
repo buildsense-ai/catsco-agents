@@ -38,9 +38,11 @@ jobs:
 
       # 只跑服务运行时套件（快速、聚焦）。上游完整回归在同步上游时本地执行：
       # node scripts/run-tests.mjs runtime
+      # 注：--test-force-exit 回避 Linux CI 上“测试已全部通过但 tsx 因残留 handle 不退出”
+      # 的问题（e2e 后 child/esbuild 句柄；影响：CI 步超时。深挖列为 TODO）。
       - name: Service runtime tests (unit)
         timeout-minutes: 5
-        run: npx tsx --test --test-timeout=60000 tests/service-config.test.ts tests/service-agent-package.test.ts tests/service-platform-client.test.ts tests/service-model-client.test.ts tests/service-session-runner.test.ts tests/service-daemon.test.ts
+        run: npx tsx --test --test-timeout=60000 --test-force-exit tests/service-config.test.ts tests/service-agent-package.test.ts tests/service-platform-client.test.ts tests/service-model-client.test.ts tests/service-session-runner.test.ts tests/service-daemon.test.ts
       - name: Service runtime tests (e2e)
         timeout-minutes: 5
-        run: npx tsx --test --test-timeout=60000 tests/service-e2e.test.ts
+        run: npx tsx --test --test-timeout=60000 --test-force-exit tests/service-e2e.test.ts
