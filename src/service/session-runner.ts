@@ -20,6 +20,11 @@ export interface RunClaimedRunOptions {
   progressThrottleMs?: number;
   /** 本地缓存（可选；权威快照在平台侧）。 */
   checkpointCache?: CheckpointCache;
+  /** 成功完成的计量回调（daemon 汇总指标用）。 */
+  onCompleted?: (info: {
+    usage: { promptTokens: number; completionTokens: number };
+    resumed: boolean;
+  }) => void;
 }
 
 export type RunOutcome = 'completed' | 'abandoned';
@@ -57,10 +62,11 @@ export async function runClaimedRun(
   const previous = parseCheckpointSnapshot(run.checkpoint?.snapshot) ?? undefined;
   const completedHistory: ServiceChatMessage[] = [...(previous?.history ?? [])];
   const userText = extractUserText(run.input);
+  const resumed = Boolean(previous && previous.history.length > 0);
 
   await platform.appendEvent(run.run_id, 'progress', {
     phase: 'start',
-    resumed: Boolean(previous && previous.history.length > 0),
+    resumed,
   });
 
   let lastDeltaSentAt = 0;
@@ -116,6 +122,7 @@ export async function runClaimedRun(
     };
     await platform.appendEvent(run.run_id, 'result', envelope);
     await platform.completeRun(run.run_id, `res_${run.run_id}`, envelope);
+    opts.onCompleted?.({ usage: result.usage, resumed });
     return 'completed';
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
