@@ -52,3 +52,19 @@ npx tsx --test tests/service-*.test.ts
 ```
 
 覆盖：配置 clamp、包加载校验、平台客户端（重试/鉴权/路由）、模型客户端纯函数、会话运行器（新建/续跑/abort 语义）、daemon（并发/租约心跳/优雅退出）、E2E（mock 平台 + mock relay SSE，含 SIGKILL 杀进程续跑：接管实例收到含第一段历史的 messages、`resumed=1`）。
+
+## 部署（实例）
+
+实例本地无持久数据（状态全部在平台检查点/对象存储）；部署 = 一份运行时 + 数据包：
+
+1. **打包**（开发机）：`bash scripts/package-runtime.sh` → 产出 `catsco-agents-runtime.tar.gz`
+   （dist + agents + 生产依赖；经跳板机/内网分发到实例，实例侧零公网依赖）。
+2. **落地**（实例）：解压到 `/opt/catsco-agents/runtime/`，写 env：
+   `/opt/catsco-agents/env/runtime.env`（`chmod 600`；含平台地址、实例 token、relay 地址等）。
+3. **服务**：`deploy/catsco-service-runtime.service` → `/etc/systemd/system/` →
+   `systemctl daemon-reload && systemctl enable --now catsco-service-runtime`。
+4. **升级**：换 tar 解压（滚动：先停一半、后停一半）+ `systemctl restart`；**数据包更新**只换 `agents/<slug>/` 目录（秒级）。
+5. **日志**：`journalctl -u catsco-service-runtime -f`。
+
+> 实例出站要求：可访问平台内部 API 与 relay（同内网）；`/internal/*` 的内网入口由平台侧部署配置（公网入口不暴露该前缀）。
+
