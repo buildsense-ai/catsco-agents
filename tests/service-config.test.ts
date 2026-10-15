@@ -16,6 +16,8 @@ test('service config defaults and clamps', () => {
   assert.equal(c.relayBaseUrl, 'http://127.0.0.1:18089');
   assert.equal(c.agentsDir.endsWith('agents'), true);
   assert.ok(c.instanceId.length > 0);
+  // 云端包缓存默认=agentsDir 兄弟目录 service-packages
+  assert.equal(c.packageCacheDir.endsWith('service-packages'), true);
 });
 
 test('service config rejects missing required values', () => {
@@ -48,4 +50,12 @@ test('service config clamps ranges and honors overrides', () => {
   });
   assert.equal(low.concurrency, 1);
   assert.equal(low.shutdownGraceMs, 120000);
+
+  const cache = loadServiceConfig({
+    CATS_SERVICE_PLATFORM_BASE_URL: 'http://x',
+    CATS_SERVICE_INSTANCE_TOKEN: 't',
+    CATS_SERVICE_AGENTS_DIR: '/opt/catsco-agents/runtime/agents',
+    CATS_SERVICE_PACKAGE_CACHE_DIR: '/data/pkgs',
+  });
+  assert.equal(cache.packageCacheDir, '/data/pkgs');
 });

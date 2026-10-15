@@ -75,6 +75,11 @@ export class PlatformClient {
     });
   }
 
+  /** 按内容 hash 拉取 agent 包（云端包分发；返回原始 bundle，由 agent-bundle 复核 hash）。 */
+  async fetchAgentPackage(packageHash: string): Promise<unknown> {
+    return this.request('GET', `/internal/service-agent-packages/${encodeURIComponent(packageHash)}`);
+  }
+
   async heartbeatInstance(activeRuns: number, metrics: InstanceMetrics): Promise<void> {
     await this.request('POST', `/internal/service-instances/${encodeURIComponent(this.cfg.instanceId)}/heartbeat`, {
       active_runs: activeRuns,

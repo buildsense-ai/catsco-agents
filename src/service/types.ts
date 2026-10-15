@@ -8,6 +8,8 @@ export interface ClaimedRun {
   session_id: string;
   /** 平台下发的 agent 标识（共享池选包依据；旧平台可不带）。 */
   agent_slug?: string;
+  /** 平台下发的包内容 hash（云端包分发；缺省=平台无包，回退内置包）。 */
+  package_hash?: string;
   definition_rev: number;
   /** 平台侧同步窗口参数（秒）；运行时仅记录日志，窗口内完不成由平台转异步句柄。 */
   threshold_seconds: number;

@@ -1,4 +1,5 @@
-import { AgentPackage } from './agent-package';
+import { AgentPackage, loadAgentPackage } from './agent-package';
+import { ensureAgentBundleCached } from './agent-bundle';
 import { CheckpointCache } from './checkpoint';
 import { ServiceConfig } from './config';
 import { InstanceMetricsTracker } from './metrics';
@@ -33,6 +34,8 @@ interface ActiveRun {
 export class ServiceDaemon {
   private readonly metrics = new InstanceMetricsTracker();
   private readonly active = new Map<string, ActiveRun>();
+  /** 云端包进程内缓存（key=<hash>:<slug>；物化目录由 ensureAgentBundleCached 负责磁盘缓存）。 */
+  private readonly pulled = new Map<string, AgentPackage>();
   private shuttingDown = false;
 
   constructor(private readonly deps: ServiceDaemonDeps) {}
@@ -101,13 +104,29 @@ export class ServiceDaemon {
 
   private async executeRun(run: ClaimedRun, controller: AbortController): Promise<void> {
     const slug = (run.agent_slug ?? '').trim();
-    let pkg = slug ? this.deps.packages.get(slug) : undefined;
+    const packageHash = (run.package_hash ?? '').trim();
+    let pkg: AgentPackage | undefined;
+    let pullError = '';
+    if (packageHash && slug) {
+      // 云端包分发：按 claim 下发的 hash 拉取（缓存命中直接装载）；失败回退内置包。
+      try {
+        pkg = await this.resolvePulledPackage(packageHash, slug);
+      } catch (err) {
+        pullError = (err as Error).message;
+        console.warn(`service daemon package pull failed run=${run.run_id} hash=${packageHash}: ${pullError}`);
+      }
+    }
+    if (!pkg) {
+      pkg = slug ? this.deps.packages.get(slug) : undefined;
+    }
     if (!pkg && !slug && this.deps.packages.size === 1) {
       // 旧平台不下发 agent_slug：单包实例直接用它（向后兼容）。
       pkg = this.deps.packages.values().next().value as AgentPackage;
     }
     if (!pkg) {
-      const errorText = `agent package not loaded: ${slug || '(agent_slug missing)'}`;
+      const errorText = `agent package not loaded: ${slug || '(agent_slug missing)'}${
+        pullError ? ` (pull failed: ${pullError})` : ''
+      }`;
       console.warn(`service daemon ${errorText} run=${run.run_id}`);
       await this.deps.platform.failRun(run.run_id, errorText, false).catch((err: Error) => {
         console.warn(`service daemon fail report failed (${run.run_id}): ${err.message}`);
@@ -136,6 +155,24 @@ export class ServiceDaemon {
     } finally {
       clearInterval(renewal);
     }
+  }
+
+  /** 云端包：磁盘缓存命中直接装载；缺失则拉取→复核 hash→物化→装载（成功后进程内缓存）。 */
+  private async resolvePulledPackage(packageHash: string, slug: string): Promise<AgentPackage> {
+    const key = `${packageHash}:${slug}`;
+    const cached = this.pulled.get(key);
+    if (cached) {
+      return cached;
+    }
+    const agentsDir = await ensureAgentBundleCached(
+      this.deps.config.packageCacheDir,
+      packageHash,
+      slug,
+      () => this.deps.platform.fetchAgentPackage(packageHash),
+    );
+    const pkg = await loadAgentPackage(agentsDir, slug);
+    this.pulled.set(key, pkg);
+    return pkg;
   }
 
   private async waitForIdle(): Promise<void> {
