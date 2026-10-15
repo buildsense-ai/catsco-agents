@@ -2,7 +2,9 @@ import { AgentPackage } from './agent-package';
 import { CheckpointCache, ServiceCheckpoint, buildNextCheckpoint, parseCheckpointSnapshot } from './checkpoint';
 import { ModelClient, ServiceChatMessage } from './model-client';
 import { PlatformClient } from './platform-client';
+import { SERVICE_SKILL_TOOL, SERVICE_SKILL_TOOL_NAME, executeSkillTool, renderSkillsManifest } from './skill-tool';
 import { ClaimedRun, ServiceRunResult } from './types';
+import { Message } from '../types';
 
 /**
  * 会话运行器（计划② Task 5）：跑一轮 claim 到的 run。
@@ -28,6 +30,9 @@ export interface RunClaimedRunOptions {
 }
 
 export type RunOutcome = 'completed' | 'abandoned';
+
+/** 工具循环上限（防跑飞；超限且有文本则收尾，否则失败重派）。 */
+export const TOOL_LOOP_MAX_ROUNDS = 6;
 
 /** 纯函数：把 run 输入转成模型可读文本（优先常见文本字段，否则 JSON）。 */
 export function extractUserText(input: unknown): string {
@@ -85,25 +90,74 @@ export async function runClaimedRun(
   };
 
   try {
-    const result = await model.run({
-      systemPrompt: pkg.systemPrompt,
-      messages: [...completedHistory, { role: 'user', content: userText }],
-      models: [pkg.model.primary.model, ...pkg.model.fallbacks.map((b) => b.model)],
-      serviceToken: run.service_token,
-      reasoningEffort: pkg.model.primary.reasoning_effort,
-      signal: opts.signal,
-      onText,
-    });
+    const skills = pkg.skills;
+    const systemPrompt = pkg.systemPrompt + renderSkillsManifest(skills);
+    const tools = skills.length > 0 ? [SERVICE_SKILL_TOOL] : undefined;
+    const convo: Message[] = [
+      ...completedHistory.map((m): Message => ({ role: m.role, content: m.content })),
+      { role: 'user', content: userText },
+    ];
+    const usageTotal = { promptTokens: 0, completionTokens: 0 };
+    let finalText = '';
+    for (let round = 1; ; round += 1) {
+      const result = await model.run({
+        systemPrompt,
+        messages: convo,
+        models: [pkg.model.primary.model, ...pkg.model.fallbacks.map((b) => b.model)],
+        serviceToken: run.service_token,
+        reasoningEffort: pkg.model.primary.reasoning_effort,
+        tools,
+        signal: opts.signal,
+        onText,
+      });
+      usageTotal.promptTokens += result.usage.promptTokens;
+      usageTotal.completionTokens += result.usage.completionTokens;
 
-    if (opts.signal?.aborted) {
-      await persistAbandonCheckpoint(run, platform, opts, previous, completedHistory);
-      return 'abandoned';
+      if (opts.signal?.aborted) {
+        await persistAbandonCheckpoint(run, platform, opts, previous, completedHistory);
+        return 'abandoned';
+      }
+
+      const calls = result.toolCalls ?? [];
+      if (calls.length === 0) {
+        finalText = result.text;
+        break;
+      }
+      if (round >= TOOL_LOOP_MAX_ROUNDS) {
+        // 防跑飞：超限后如本轮还有文本可用则收尾，否则显式失败（abandon→重派/最终 failed）。
+        if (result.text.trim()) {
+          finalText = result.text;
+          break;
+        }
+        throw new Error(`tool loop exceeded ${TOOL_LOOP_MAX_ROUNDS} rounds`);
+      }
+      convo.push({ role: 'assistant', content: result.text || null, tool_calls: calls });
+      for (const call of calls) {
+        let toolResult: string;
+        if (call.function.name === SERVICE_SKILL_TOOL_NAME) {
+          let input: unknown = {};
+          try {
+            input = JSON.parse(call.function.arguments || '{}');
+          } catch {
+            input = {};
+          }
+          toolResult = executeSkillTool(skills, input);
+        } else {
+          toolResult = `错误：未知工具 "${call.function.name}"（本运行时仅提供 ${SERVICE_SKILL_TOOL_NAME}）`;
+        }
+        convo.push({ role: 'tool', tool_call_id: call.id, content: toolResult });
+        void platform
+          .appendEvent(run.run_id, 'progress', { phase: 'tool', name: call.function.name })
+          .catch(() => {
+            // 进展事件失败不阻断主流程
+          });
+      }
     }
 
     const nextHistory: ServiceChatMessage[] = [
       ...completedHistory,
       { role: 'user', content: userText },
-      { role: 'assistant', content: result.text },
+      { role: 'assistant', content: finalText },
     ];
     const checkpoint = buildNextCheckpoint(previous, nextHistory);
     await platform.saveCheckpoint(run.run_id, checkpoint.revision, checkpoint);
@@ -114,15 +168,15 @@ export async function runClaimedRun(
       run_id: run.run_id,
       session_id: run.session_id,
       status: 'completed',
-      output: { text: result.text },
+      output: { text: finalText },
       usage: {
-        prompt_tokens: result.usage.promptTokens,
-        completion_tokens: result.usage.completionTokens,
+        prompt_tokens: usageTotal.promptTokens,
+        completion_tokens: usageTotal.completionTokens,
       },
     };
     await platform.appendEvent(run.run_id, 'result', envelope);
     await platform.completeRun(run.run_id, `res_${run.run_id}`, envelope);
-    opts.onCompleted?.({ usage: result.usage, resumed });
+    opts.onCompleted?.({ usage: usageTotal, resumed });
     return 'completed';
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

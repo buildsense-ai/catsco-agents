@@ -1,0 +1,13 @@
+{
+  "schema": "catsco.service-agent.v1",
+  "slug": "skilled",
+  "name": "Skilled Fixture",
+  "prompt": { "system": "system-prompt.md" },
+  "model": { "primary": { "provider": "anthropic", "model": "fixture-model" }, "fallbacks": [] },
+  "behavior": { "async_threshold_seconds": 30, "max_run_seconds": 60 },
+  "skills": [
+    { "name": "helper", "description": "格式化助手技能", "path": "skills/helper.md" },
+    { "name": "plain" }
+  ],
+  "knowledge": { "files": [] }
+}

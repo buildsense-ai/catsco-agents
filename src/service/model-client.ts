@@ -1,10 +1,12 @@
 import { AnthropicProvider } from '../providers/anthropic-provider';
 import { ChatConfig, ChatResponse, Message } from '../types';
+import { ToolCall, ToolDefinition } from '../types/tool';
 
 /**
  * 模型调用封装（计划② Task 4）。
  * 真实现走 relay 的 anthropic 协议面（POST {relayBaseUrl}/v1/messages 由 provider 构造），
  * apiKey=服务 token（st1.，计费归 caller）；每次 run 新建 provider（token 随 run 变化）。
+ * 支持工具（阶段 2A：prompt 型技能经 skill 工具按需加载）——toolCalls 透传给调用方循环。
  * daemon / session-runner 只依赖 ModelClient 接口，测试注入 fake。
  */
 
@@ -16,11 +18,13 @@ export interface ServiceChatMessage {
 
 export interface ModelRunRequest {
   systemPrompt: string;
-  messages: ServiceChatMessage[];
+  messages: Message[];
   /** 应用的模型绑定（主模型在 [0]；回退列表后续使用）。 */
   models: string[];
   serviceToken: string;
   reasoningEffort?: string;
+  /** 可用工具（无则不下发）。 */
+  tools?: ToolDefinition[];
   signal?: AbortSignal;
   onText?: (delta: string) => void;
 }
@@ -29,23 +33,23 @@ export interface ModelRunResult {
   text: string;
   usage: { promptTokens: number; completionTokens: number };
   stopReason?: string;
+  /** 模型请求的工具调用（有则应执行后回灌续跑）。 */
+  toolCalls?: ToolCall[];
 }
 
 export interface ModelClient {
   run(req: ModelRunRequest): Promise<ModelRunResult>;
 }
 
-/** 纯函数：system 提示 + 会话历史 → provider Message[]（system 首条，空提示跳过）。 */
-export function buildProviderMessages(systemPrompt: string, history: ServiceChatMessage[]): Message[] {
-  const messages: Message[] = [];
+/** 纯函数：system 提示 + 会话消息 → provider Message[]（system 首条，空提示跳过）。 */
+export function buildProviderMessages(systemPrompt: string, messages: Message[]): Message[] {
+  const out: Message[] = [];
   const system = systemPrompt.trim();
   if (system) {
-    messages.push({ role: 'system', content: system });
+    out.push({ role: 'system', content: system });
   }
-  for (const item of history) {
-    messages.push({ role: item.role, content: item.content });
-  }
-  return messages;
+  out.push(...messages);
+  return out;
 }
 
 /** 纯函数：ChatResponse → 服务 usage（缺省 0）。 */
@@ -79,7 +83,7 @@ export class RelayModelClient implements ModelClient {
     let streamed = '';
     const response = await provider.chatStream(
       buildProviderMessages(req.systemPrompt, req.messages),
-      [],
+      req.tools ?? [],
       {
         onText: (delta: string) => {
           streamed += delta;
@@ -89,6 +93,11 @@ export class RelayModelClient implements ModelClient {
       req.signal ? { signal: req.signal } : undefined,
     );
     const text = (streamed || response?.content || '').trim();
-    return { text, usage: extractUsage(response), stopReason: response?.stopReason };
+    return {
+      text,
+      usage: extractUsage(response),
+      stopReason: response?.stopReason,
+      toolCalls: response?.toolCalls,
+    };
   }
 }

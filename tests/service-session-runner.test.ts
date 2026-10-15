@@ -195,3 +195,95 @@ test('abort saves checkpoint and abandons without complete', async () => {
   assert.deepEqual((checkpoint.args[2] as { history: unknown[] }).history, []);
   assert.equal(checkpoint.args[1], 1);
 });
+
+// ---- 阶段 2A：prompt 型技能（skill 工具循环）----
+
+const skilledPkg: AgentPackage = {
+  ...pkg,
+  slug: 'skilled',
+  skills: [{ name: 'helper', description: '格式化助手技能', content: '# Helper\n按步骤执行' }],
+};
+
+test('skill loop: model loads a skill then completes with merged usage', async () => {
+  const record: RecordedCall[] = [];
+  const platform = fakePlatform(record);
+  const { model, calls } = scriptedModel(() => {
+    if (calls.length === 1) {
+      return {
+        text: '',
+        usage: { promptTokens: 2, completionTokens: 3 },
+        toolCalls: [
+          { id: 'call_1', type: 'function', function: { name: 'skill', arguments: '{"name":"helper"}' } },
+        ],
+      };
+    }
+    return { text: 'final-answer', usage: { promptTokens: 4, completionTokens: 5 } };
+  });
+
+  const outcome = await runClaimedRun(baseRun, skilledPkg, model, platform, { progressThrottleMs: 0 });
+  assert.equal(outcome, 'completed');
+  assert.equal(calls.length, 2, 'one tool round + one final round');
+
+  // 第一轮带工具 + 技能清单在 system prompt
+  assert.ok(calls[0].tools && calls[0].tools.length === 1 && calls[0].tools[0].name === 'skill');
+  assert.ok(calls[0].systemPrompt.includes('## 可用技能'));
+  assert.ok(calls[0].systemPrompt.includes('helper'));
+
+  // 第二轮消息链：assistant(tool_calls) + tool(技能全文)
+  const secondMessages = calls[1].messages;
+  const assistantMsg = secondMessages.find((m) => m.role === 'assistant' && m.tool_calls);
+  assert.ok(assistantMsg, 'assistant tool_calls message must be replayed');
+  const toolMsg = secondMessages.find((m) => m.role === 'tool');
+  assert.ok(toolMsg, 'tool result message must be appended');
+  assert.equal(toolMsg.tool_call_id, 'call_1');
+  assert.ok(String(toolMsg.content).includes('[skill:helper]'));
+
+  // 完成：文本=最终轮；usage=多轮累计；checkpoint 只含 user+assistant 文本对
+  const complete = record.find((r) => r.kind === 'complete');
+  assert.ok(complete);
+  const envelope = complete.args[2] as { output: { text: string }; usage: { prompt_tokens: number } };
+  assert.equal(envelope.output.text, 'final-answer');
+  assert.equal(envelope.usage.prompt_tokens, 6);
+  const checkpoint = record.find((r) => r.kind === 'checkpoint');
+  assert.ok(checkpoint);
+  const history = (checkpoint.args[2] as { history: { role: string; content: string }[] }).history;
+  assert.equal(history.length, 2);
+  assert.equal(history[1].content, 'final-answer');
+  // 工具进展事件
+  assert.ok(record.some((r) => r.kind === 'event' && r.args[1] === 'progress' && (r.args[2] as { phase?: string }).phase === 'tool'));
+});
+
+test('skill loop: unknown tool name yields an error tool result but continues', async () => {
+  const record: RecordedCall[] = [];
+  const platform = fakePlatform(record);
+  const { model, calls } = scriptedModel((req) => {
+    if (calls.length === 1) {
+      return {
+        text: '',
+        usage: { promptTokens: 1, completionTokens: 1 },
+        toolCalls: [
+          { id: 'call_x', type: 'function', function: { name: 'ghost_tool', arguments: '{}' } },
+        ],
+      };
+    }
+    return { text: 'done', usage: { promptTokens: 1, completionTokens: 1 } };
+  });
+  const outcome = await runClaimedRun(baseRun, skilledPkg, model, platform, { progressThrottleMs: 0 });
+  assert.equal(outcome, 'completed');
+  const toolMsg = calls[1].messages.find((m) => m.role === 'tool');
+  assert.ok(toolMsg && String(toolMsg.content).includes('未知工具'));
+});
+
+test('skill loop: exceeding max rounds without text abandons', async () => {
+  const record: RecordedCall[] = [];
+  const platform = fakePlatform(record);
+  const { model } = scriptedModel(() => ({
+    text: '',
+    usage: { promptTokens: 1, completionTokens: 1 },
+    toolCalls: [{ id: 'c', type: 'function', function: { name: 'skill', arguments: '{"name":"helper"}' } }],
+  }));
+  const outcome = await runClaimedRun(baseRun, skilledPkg, model, platform, { progressThrottleMs: 0 });
+  assert.equal(outcome, 'abandoned');
+  assert.equal(record.filter((r) => r.kind === 'complete').length, 0);
+  assert.equal(record.filter((r) => r.kind === 'checkpoint').length, 1);
+});
