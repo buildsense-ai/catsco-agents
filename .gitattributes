@@ -8,3 +8,7 @@ agents/**/*.md text eol=lf
 agents/**/*.json text eol=lf
 tests/fixtures/agents/**/*.md text eol=lf
 tests/fixtures/agents/**/*.json text eol=lf
+
+# 服务运维脚本：一律 LF（WSL/远端 bash 执行；CRLF 会让 set -o pipefail 直接报错）
+scripts/*.sh text eol=lf
+deploy/*.sh text eol=lf
