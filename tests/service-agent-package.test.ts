@@ -22,7 +22,7 @@ test('loads the hello pilot package from the repo agents dir', async () => {
   const agentsDir = path.resolve(__dirname, '..', 'agents');
   const pkg = await loadAgentPackage(agentsDir, 'hello');
   assert.equal(pkg.slug, 'hello');
-  assert.equal(pkg.model.primary.model, 'gpt-6.1-sol');
+  assert.equal(pkg.model.primary.model, 'MiniMax-M3');
   assert.ok(pkg.systemPrompt.length > 0);
   assert.equal(pkg.behavior.asyncThresholdSeconds, 60);
 });
