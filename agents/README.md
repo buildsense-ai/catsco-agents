@@ -16,6 +16,20 @@
 - 加载器：`src/service/agent-package.ts`（`loadAgentPackage(agentsDir, slug)`）。
 - 试点包：`hello/`。
 
+## 现有包
+
+| slug | 名称 | 模型 | 技能 / 知识 |
+|---|---|---|---|
+| `hello` | Hello 试点应用 | MiniMax-M3 | — / — |
+| `weekly-report` | 周报助手 | claude-sonnet-5-5 | company-style / glossary |
+| `meeting-notes` | 会议纪要助手 | claude-sonnet-5-5 | minutes-format / glossary |
+| `zh-polish` | 中文润色助手 | MiniMax-M3 | company-style / glossary |
+
+知识文件变更**必须同步 `agent.json` 的 sha256 钉定**（LF 规范形）：
+`node -e "const fs=require('fs'),c=require('crypto');const r=fs.readFileSync('<file>','utf8');console.log(c.createHash('sha256').update(r.replace(/\r\n/g,'\n'),'utf8').digest('hex'))"`
+
+发布：`node scripts/publish-agent.mjs <slug> --ssh cats-ctyun`（自动注册 + 建版本，实例按 hash 自动拉取）。
+
 ## 纪律
 
 - 新增/修改包 → 走仓库 PR；**不要**在包内放密钥、账号或环境相关内容（凭据走运行时 env）。

@@ -1,0 +1,23 @@
+{
+  "schema": "catsco.service-agent.v1",
+  "slug": "zh-polish",
+  "name": "中文润色助手",
+  "prompt": { "system": "system-prompt.md" },
+  "model": { "primary": { "provider": "anthropic", "model": "MiniMax-M3" }, "fallbacks": [] },
+  "behavior": { "async_threshold_seconds": 60, "max_run_seconds": 600 },
+  "skills": [
+    {
+      "name": "company-style",
+      "description": "CatsCo 中文书面语规范（禁止清单/病句修法/标点细则/修改说明写法）。润色任何对外文案前必须加载。",
+      "path": "skills/company-style.md"
+    }
+  ],
+  "knowledge": {
+    "files": [
+      {
+        "path": "knowledge/glossary.md",
+        "sha256": "c650a9d1db58e80237693b54346c08b62d3d1c4511d6e8cc27bbf4502be87ef7"
+      }
+    ]
+  }
+}
