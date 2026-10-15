@@ -149,11 +149,11 @@ async function main() {
   const route = `/internal/service-agents/${args.slug}/publish`;
   if (args.ssh) {
     // 远端 curl：token 从容器 env 现取（不落本地、不进 shell 历史）。
-    const remote = [
-      `TOKEN=$(docker exec ${args.container} printenv CATS_SERVICE_INSTANCE_TOKEN)`,
-      `curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json'`,
-      `--data-binary @- ${args.url}${route}`,
-    ].join(' ');
+    // 注意：TOKEN=$(...) 与 curl 必须在同一条命令行且用 `;` 分隔——用空格会变成临时 env 赋值，$TOKEN 展开为空。
+    const remote =
+      `TOKEN=$(docker exec ${args.container} printenv CATS_SERVICE_INSTANCE_TOKEN); ` +
+      `curl -sS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' ` +
+      `--data-binary @- ${args.url}${route}`;
     const result = await run('ssh', [args.ssh, remote], payload);
     if (result.code !== 0) {
       console.error(result.stderr.trim() || `ssh exit ${result.code}`);
