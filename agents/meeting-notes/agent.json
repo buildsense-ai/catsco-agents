@@ -1,0 +1,23 @@
+{
+  "schema": "catsco.service-agent.v1",
+  "slug": "meeting-notes",
+  "name": "会议纪要助手",
+  "prompt": { "system": "system-prompt.md" },
+  "model": { "primary": { "provider": "anthropic", "model": "claude-sonnet-5-5", "reasoning_effort": "medium" }, "fallbacks": [] },
+  "behavior": { "async_threshold_seconds": 60, "max_run_seconds": 600 },
+  "skills": [
+    {
+      "name": "minutes-format",
+      "description": "CatsCo 会议纪要格式规范（信息分拣/决议写法/待办表格/审查清单）。整理会议记录前必须加载。",
+      "path": "skills/minutes-format.md"
+    }
+  ],
+  "knowledge": {
+    "files": [
+      {
+        "path": "knowledge/glossary.md",
+        "sha256": "217270d62824e56342728ac0b88f9181fa4b0ba07e0f5d5e80c9441e0ca5fd35"
+      }
+    ]
+  }
+}
