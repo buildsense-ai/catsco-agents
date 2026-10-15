@@ -248,7 +248,7 @@ test('scenario A: daemon completes a run end to end', async (t) => {
   // relay 真实请求：模型=hello 包绑定、system=包提示词、messages=本轮输入
   assert.equal(relay.requests.length, 1);
   assert.equal(relay.requests[0].path, '/v1/messages');
-  assert.equal(relay.requests[0].model, 'gpt-6.1-sol');
+  assert.equal(relay.requests[0].model, 'MiniMax-M3');
   assert.ok((relay.requests[0].system ?? '').includes('Hello'));
   assert.deepEqual(
     relay.requests[0].messages.map((m) => [m.role, m.content]),
