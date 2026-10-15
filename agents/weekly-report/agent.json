@@ -5,6 +5,12 @@
   "prompt": { "system": "system-prompt.md" },
   "model": { "primary": { "provider": "anthropic", "model": "claude-sonnet-5-5", "reasoning_effort": "medium" }, "fallbacks": [] },
   "behavior": { "async_threshold_seconds": 60, "max_run_seconds": 600 },
-  "skills": [],
+  "skills": [
+    {
+      "name": "company-style",
+      "description": "CatsCo 周报写作规范（语气/结构/逐条写法/审查清单）。撰写或审查周报前必须加载。",
+      "path": "skills/company-style.md"
+    }
+  ],
   "knowledge": { "files": [] }
 }

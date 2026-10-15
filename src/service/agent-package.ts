@@ -15,7 +15,18 @@ export interface ModelBinding {
 
 export interface SkillRef {
   name: string;
-  version?: string;
+  description?: string;
+  /** 包内相对路径；缺省 skills/<name>.md。 */
+  path?: string;
+  /** 引用型技能（如 skillhub）——本阶段不支持，出现即报错。 */
+  source?: string;
+}
+
+/** 已加载的技能（prompt 型：全文随包分发，模型经 skill 工具按需加载）。 */
+export interface LoadedSkill {
+  name: string;
+  description: string;
+  content: string;
 }
 
 export interface KnowledgeFileRef {
@@ -29,7 +40,7 @@ export interface AgentPackage {
   systemPrompt: string;
   model: { primary: ModelBinding; fallbacks: ModelBinding[] };
   behavior: { asyncThresholdSeconds: number; maxRunSeconds: number };
-  skills: SkillRef[];
+  skills: LoadedSkill[];
   knowledge: { files: KnowledgeFileRef[] };
 }
 
@@ -123,6 +134,7 @@ export async function loadAgentPackage(agentsDir: string, slug: string): Promise
   }
   const asyncThreshold = manifest.behavior?.async_threshold_seconds;
   const maxRun = manifest.behavior?.max_run_seconds;
+  const skills = await loadSkills(slug, packageDir, manifest.skills ?? []);
   return {
     slug,
     name: (manifest.name ?? '').trim() || slug,
@@ -132,7 +144,36 @@ export async function loadAgentPackage(agentsDir: string, slug: string): Promise
       asyncThresholdSeconds: Number.isFinite(asyncThreshold) ? (asyncThreshold as number) : 60,
       maxRunSeconds: Number.isFinite(maxRun) ? (maxRun as number) : 600,
     },
-    skills: manifest.skills ?? [],
+    skills,
     knowledge: { files: manifest.knowledge?.files ?? [] },
   };
+}
+
+/** 加载包内 prompt 型技能（缺省约定 skills/<name>.md；引用型技能本阶段不支持）。 */
+async function loadSkills(slug: string, packageDir: string, refs: SkillRef[]): Promise<LoadedSkill[]> {
+  const skills: LoadedSkill[] = [];
+  for (const raw of refs) {
+    if (raw?.source) {
+      throw new Error(
+        `agent package ${slug}: skill source "${raw.source}" not supported yet (bundle the skill file in the package instead)`,
+      );
+    }
+    const name = (raw?.name ?? '').trim();
+    if (!name) {
+      throw new Error(`agent package ${slug}: skill name required`);
+    }
+    const rel = (raw?.path ?? `skills/${name}.md`).trim();
+    let skillRaw: string;
+    try {
+      skillRaw = await fs.readFile(path.join(packageDir, rel), 'utf8');
+    } catch {
+      throw new Error(`agent package ${slug}: skill file missing (${rel})`);
+    }
+    const content = skillRaw.trim();
+    if (!content) {
+      throw new Error(`agent package ${slug}: skill ${name} is empty`);
+    }
+    skills.push({ name, description: (raw?.description ?? '').trim(), content });
+  }
+  return skills;
 }
