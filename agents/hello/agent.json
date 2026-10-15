@@ -3,7 +3,7 @@
   "slug": "hello",
   "name": "Hello 试点应用",
   "prompt": { "system": "system-prompt.md" },
-  "model": { "primary": { "provider": "anthropic", "model": "gpt-6.1-sol", "reasoning_effort": "medium" }, "fallbacks": [] },
+  "model": { "primary": { "provider": "anthropic", "model": "MiniMax-M3", "reasoning_effort": "medium" }, "fallbacks": [] },
   "behavior": { "async_threshold_seconds": 60, "max_run_seconds": 600 },
   "skills": [],
   "knowledge": { "files": [] }
