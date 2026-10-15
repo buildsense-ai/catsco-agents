@@ -1,4 +1,4 @@
-import { AgentPackage } from './agent-package';
+import { AgentPackage, renderKnowledgeBlock } from './agent-package';
 import { CheckpointCache, ServiceCheckpoint, buildNextCheckpoint, parseCheckpointSnapshot } from './checkpoint';
 import { ModelClient, ServiceChatMessage } from './model-client';
 import { PlatformClient } from './platform-client';
@@ -91,7 +91,8 @@ export async function runClaimedRun(
 
   try {
     const skills = pkg.skills;
-    const systemPrompt = pkg.systemPrompt + renderSkillsManifest(skills);
+    const systemPrompt =
+      pkg.systemPrompt + renderKnowledgeBlock(pkg.knowledge.files) + renderSkillsManifest(skills);
     const tools = skills.length > 0 ? [SERVICE_SKILL_TOOL] : undefined;
     const convo: Message[] = [
       ...completedHistory.map((m): Message => ({ role: m.role, content: m.content })),

@@ -1,3 +1,4 @@
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 
@@ -34,6 +35,12 @@ export interface KnowledgeFileRef {
   sha256: string;
 }
 
+/** 已加载的知识文件（全量注入档：内容随包分发，拼进 system prompt）。 */
+export interface LoadedKnowledge {
+  path: string;
+  content: string;
+}
+
 export interface AgentPackage {
   slug: string;
   name: string;
@@ -41,8 +48,12 @@ export interface AgentPackage {
   model: { primary: ModelBinding; fallbacks: ModelBinding[] };
   behavior: { asyncThresholdSeconds: number; maxRunSeconds: number };
   skills: LoadedSkill[];
-  knowledge: { files: KnowledgeFileRef[] };
+  knowledge: { files: LoadedKnowledge[] };
 }
+
+/** 知识全量注入的上限（防炸上下文；超出报错，促使用技能/拆分）。 */
+export const KNOWLEDGE_MAX_FILE_BYTES = 32 * 1024;
+export const KNOWLEDGE_MAX_TOTAL_BYTES = 96 * 1024;
 
 const AGENT_SCHEMA = 'catsco.service-agent.v1';
 
@@ -66,6 +77,18 @@ function normalizeBinding(raw: Partial<ModelBinding> | undefined): ModelBinding 
     binding.reasoning_effort = raw.reasoning_effort;
   }
   return binding;
+}
+
+/** system prompt 尾部的知识段（全量注入档；无知识返回空串）。 */
+export function renderKnowledgeBlock(files: LoadedKnowledge[]): string {
+  if (files.length === 0) {
+    return '';
+  }
+  const parts = ['', '## 知识', '以下为随应用分发的参考资料，回答时以此为准：'];
+  for (const file of files) {
+    parts.push('', `### ${file.path}`, file.content);
+  }
+  return parts.join('\n');
 }
 
 /**
@@ -135,6 +158,7 @@ export async function loadAgentPackage(agentsDir: string, slug: string): Promise
   const asyncThreshold = manifest.behavior?.async_threshold_seconds;
   const maxRun = manifest.behavior?.max_run_seconds;
   const skills = await loadSkills(slug, packageDir, manifest.skills ?? []);
+  const knowledge = await loadKnowledge(slug, packageDir, manifest.knowledge?.files ?? []);
   return {
     slug,
     name: (manifest.name ?? '').trim() || slug,
@@ -145,8 +169,48 @@ export async function loadAgentPackage(agentsDir: string, slug: string): Promise
       maxRunSeconds: Number.isFinite(maxRun) ? (maxRun as number) : 600,
     },
     skills,
-    knowledge: { files: manifest.knowledge?.files ?? [] },
+    knowledge: { files: knowledge },
   };
+}
+
+/** 加载知识文件：sha256 钉定校验（LF 规范形；发布即审查）+ 大小上限（全量注入档）。 */
+async function loadKnowledge(slug: string, packageDir: string, refs: KnowledgeFileRef[]): Promise<LoadedKnowledge[]> {
+  const files: LoadedKnowledge[] = [];
+  let totalBytes = 0;
+  for (const ref of refs) {
+    const rel = (ref?.path ?? '').trim();
+    if (!rel) {
+      throw new Error(`agent package ${slug}: knowledge file path required`);
+    }
+    let raw: Buffer;
+    try {
+      raw = await fs.readFile(path.join(packageDir, rel));
+    } catch {
+      throw new Error(`agent package ${slug}: knowledge file missing (${rel})`);
+    }
+    if (raw.byteLength > KNOWLEDGE_MAX_FILE_BYTES) {
+      throw new Error(
+        `agent package ${slug}: knowledge file ${rel} exceeds ${KNOWLEDGE_MAX_FILE_BYTES} bytes (use a skill for large material)`,
+      );
+    }
+    totalBytes += raw.byteLength;
+    if (totalBytes > KNOWLEDGE_MAX_TOTAL_BYTES) {
+      throw new Error(`agent package ${slug}: knowledge total exceeds ${KNOWLEDGE_MAX_TOTAL_BYTES} bytes`);
+    }
+    const digest = crypto
+      .createHash('sha256')
+      .update(raw.toString('utf8').replace(/\r\n/g, '\n'), 'utf8')
+      .digest('hex');
+    const expected = (ref.sha256 ?? '').trim().toLowerCase();
+    if (!expected) {
+      throw new Error(`agent package ${slug}: knowledge ${rel} requires sha256`);
+    }
+    if (digest !== expected) {
+      throw new Error(`agent package ${slug}: knowledge ${rel} sha256 mismatch (got ${digest})`);
+    }
+    files.push({ path: rel, content: raw.toString('utf8').trim() });
+  }
+  return files;
 }
 
 /** 加载包内 prompt 型技能（缺省约定 skills/<name>.md；引用型技能本阶段不支持）。 */

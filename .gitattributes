@@ -2,3 +2,9 @@ ops/ctyun-worker-image/*.sh text eol=lf
 ops/ctyun-worker-image/*.ps1 text eol=lf
 scripts/build-linux-worker-artifact.mjs text eol=lf
 .github/workflows/worker-image.yml text eol=lf
+
+# 服务化数据包：md/json 统一 LF（知识 sha256 钉定以 LF 规范形计算；加载器另有归一化兜底）
+agents/**/*.md text eol=lf
+agents/**/*.json text eol=lf
+tests/fixtures/agents/**/*.md text eol=lf
+tests/fixtures/agents/**/*.json text eol=lf

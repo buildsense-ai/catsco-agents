@@ -9,5 +9,9 @@
     { "name": "helper", "description": "格式化助手技能", "path": "skills/helper.md" },
     { "name": "plain" }
   ],
-  "knowledge": { "files": [] }
+  "knowledge": {
+    "files": [
+      { "path": "knowledge/faq.md", "sha256": "ebba8b9e49d16a285d1fb50af1651dd436c03543558285de7acb56db10683eff" }
+    ]
+  }
 }

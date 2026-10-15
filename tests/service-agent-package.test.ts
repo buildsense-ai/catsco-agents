@@ -29,6 +29,10 @@ test('loads all packages from the repo agents dir', async () => {
   assert.equal(weekly.model.primary.model, 'claude-sonnet-5-5');
   assert.equal(weekly.behavior.asyncThresholdSeconds, 60);
   assert.ok(weekly.systemPrompt.includes('Weekly Report'));
+  assert.equal(weekly.skills.length, 1);
+  assert.equal(weekly.skills[0].name, 'company-style');
+  assert.equal(weekly.knowledge.files.length, 1);
+  assert.ok(weekly.knowledge.files[0].content.includes('模型接入网关'));
 });
 
 test('loads bundle skills with explicit and default paths', async () => {
@@ -39,6 +43,39 @@ test('loads bundle skills with explicit and default paths', async () => {
   assert.ok(helper.content.includes('格式化结果'), 'explicit path skill content');
   const plain = pkg.skills.find((s) => s.name === 'plain')!;
   assert.ok(plain.content.includes('默认路径'), 'default path skills/<name>.md');
+});
+
+test('loads knowledge files with sha256 verification', async () => {
+  const pkg = await loadAgentPackage(fixturesDir, 'skilled');
+  assert.equal(pkg.knowledge.files.length, 1);
+  const faq = pkg.knowledge.files[0];
+  assert.equal(faq.path, 'knowledge/faq.md');
+  assert.ok(faq.content.includes('专业版'), 'knowledge content loaded');
+});
+
+test('rejects knowledge with tampered sha256 or missing file', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-knowledge-'));
+  const dir = path.join(tmp, 'kb');
+  await fs.mkdir(path.join(dir, 'knowledge'), { recursive: true });
+  await fs.writeFile(path.join(dir, 'system-prompt.md'), 'sp');
+  await fs.writeFile(path.join(dir, 'knowledge', 'doc.md'), 'hello knowledge');
+  const manifest = (files: unknown): string =>
+    JSON.stringify({
+      schema: 'catsco.service-agent.v1',
+      slug: 'kb',
+      name: 'KB',
+      prompt: { system: 'system-prompt.md' },
+      model: { primary: { provider: 'anthropic', model: 'm' } },
+      knowledge: { files },
+    });
+  await fs.writeFile(path.join(dir, 'agent.json'), manifest([{ path: 'knowledge/doc.md', sha256: 'abc' }]));
+  await assert.rejects(loadAgentPackage(tmp, 'kb'), /sha256 mismatch/);
+  await fs.writeFile(path.join(dir, 'agent.json'), manifest([{ path: 'knowledge/ghost.md', sha256: 'abc' }]));
+  await assert.rejects(loadAgentPackage(tmp, 'kb'), /knowledge file missing/);
+  const realHash = (await import('node:crypto')).createHash('sha256').update('hello knowledge').digest('hex');
+  await fs.writeFile(path.join(dir, 'agent.json'), manifest([{ path: 'knowledge/doc.md', sha256: realHash }]));
+  const ok = await loadAgentPackage(tmp, 'kb');
+  assert.equal(ok.knowledge.files[0].content, 'hello knowledge');
 });
 
 test('rejects skillhub-sourced skills and missing skill files', async () => {
