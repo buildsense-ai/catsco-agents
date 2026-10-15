@@ -8,6 +8,8 @@ export interface ServiceConfig {
   instanceId: string;
   relayBaseUrl: string;
   agentsDir: string;
+  /** 云端包缓存根目录（<root>/<packageHash>/agents/<slug>/…）。 */
+  packageCacheDir: string;
   concurrency: number;
   pollIntervalMs: number;
   heartbeatMs: number;
@@ -53,6 +55,13 @@ export function loadServiceConfig(env: Record<string, string | undefined>): Serv
     instanceId: (env.CATS_SERVICE_INSTANCE_ID ?? '').trim() || hostname(),
     relayBaseUrl: normalizeBaseUrl(env.CATS_SERVICE_RELAY_BASE_URL) || DEFAULTS.relayBaseUrl,
     agentsDir: (env.CATS_SERVICE_AGENTS_DIR ?? '').trim() || path.resolve(__dirname, '..', '..', 'agents'),
+    packageCacheDir:
+      (env.CATS_SERVICE_PACKAGE_CACHE_DIR ?? '').trim() ||
+      path.resolve(
+        (env.CATS_SERVICE_AGENTS_DIR ?? '').trim() || path.resolve(__dirname, '..', '..', 'agents'),
+        '..',
+        'service-packages',
+      ),
     concurrency: clampInt(env.CATS_SERVICE_CONCURRENCY, DEFAULTS.concurrency, 1, 8),
     pollIntervalMs: clampInt(env.CATS_SERVICE_POLL_INTERVAL_MS, DEFAULTS.pollIntervalMs, 250, 30000),
     heartbeatMs: clampInt(env.CATS_SERVICE_HEARTBEAT_MS, DEFAULTS.heartbeatMs, 1000, 60000),
