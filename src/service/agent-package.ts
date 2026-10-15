@@ -173,7 +173,7 @@ export async function loadAgentPackage(agentsDir: string, slug: string): Promise
   };
 }
 
-/** 加载知识文件：sha256 钉定校验（发布即审查）+ 大小上限（全量注入档）。 */
+/** 加载知识文件：sha256 钉定校验（LF 规范形；发布即审查）+ 大小上限（全量注入档）。 */
 async function loadKnowledge(slug: string, packageDir: string, refs: KnowledgeFileRef[]): Promise<LoadedKnowledge[]> {
   const files: LoadedKnowledge[] = [];
   let totalBytes = 0;
@@ -197,7 +197,10 @@ async function loadKnowledge(slug: string, packageDir: string, refs: KnowledgeFi
     if (totalBytes > KNOWLEDGE_MAX_TOTAL_BYTES) {
       throw new Error(`agent package ${slug}: knowledge total exceeds ${KNOWLEDGE_MAX_TOTAL_BYTES} bytes`);
     }
-    const digest = crypto.createHash('sha256').update(raw).digest('hex');
+    const digest = crypto
+      .createHash('sha256')
+      .update(raw.toString('utf8').replace(/\r\n/g, '\n'), 'utf8')
+      .digest('hex');
     const expected = (ref.sha256 ?? '').trim().toLowerCase();
     if (!expected) {
       throw new Error(`agent package ${slug}: knowledge ${rel} requires sha256`);

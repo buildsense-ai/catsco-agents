@@ -11,7 +11,7 @@
   ],
   "knowledge": {
     "files": [
-      { "path": "knowledge/faq.md", "sha256": "80cd1198fec7640eb1e05a642139bfe5bbb5fea305f48432864803dca95da39a" }
+      { "path": "knowledge/faq.md", "sha256": "ebba8b9e49d16a285d1fb50af1651dd436c03543558285de7acb56db10683eff" }
     ]
   }
 }
