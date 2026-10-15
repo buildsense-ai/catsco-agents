@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import * as assert from 'node:assert';
 import * as path from 'node:path';
-import { loadAgentPackage } from '../src/service/agent-package';
+import { loadAgentPackage, loadAllAgentPackages } from '../src/service/agent-package';
 
 const fixturesDir = path.join(__dirname, 'fixtures', 'agents');
 
@@ -25,4 +25,15 @@ test('loads the hello pilot package from the repo agents dir', async () => {
   assert.equal(pkg.model.primary.model, 'MiniMax-M3');
   assert.ok(pkg.systemPrompt.length > 0);
   assert.equal(pkg.behavior.asyncThresholdSeconds, 60);
+});
+
+test('loads all packages from the repo agents dir', async () => {
+  const agentsDir = path.resolve(__dirname, '..', 'agents');
+  const packages = await loadAllAgentPackages(agentsDir);
+  assert.ok(packages.has('hello'), 'hello package should load');
+  assert.ok(packages.has('weekly-report'), 'weekly-report package should load');
+  const weekly = packages.get('weekly-report')!;
+  assert.equal(weekly.model.primary.model, 'claude-sonnet-5-5');
+  assert.equal(weekly.behavior.asyncThresholdSeconds, 60);
+  assert.ok(weekly.systemPrompt.includes('Weekly Report'));
 });

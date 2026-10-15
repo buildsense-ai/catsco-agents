@@ -57,6 +57,31 @@ function normalizeBinding(raw: Partial<ModelBinding> | undefined): ModelBinding 
   return binding;
 }
 
+/**
+ * 装载 agentsDir 下全部合法包（共享池：实例=通用工人，按 run 的 agent_slug 选包）。
+ * 非法 slug 目录（含非字母数字连字符）跳过；遇到合法 slug 但包内容损坏 → 抛错（fail-fast）。
+ */
+export async function loadAllAgentPackages(agentsDir: string): Promise<Map<string, AgentPackage>> {
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fs.readdir(agentsDir, { withFileTypes: true });
+  } catch {
+    throw new Error(`agents dir not found: ${agentsDir}`);
+  }
+  const packages = new Map<string, AgentPackage>();
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const slug = entry.name;
+    if (!/^[a-z0-9-]+$/.test(slug)) {
+      continue;
+    }
+    packages.set(slug, await loadAgentPackage(agentsDir, slug));
+  }
+  return packages;
+}
+
 export async function loadAgentPackage(agentsDir: string, slug: string): Promise<AgentPackage> {
   const packageDir = path.join(agentsDir, slug);
   let manifestRaw: string;

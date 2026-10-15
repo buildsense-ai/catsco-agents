@@ -6,6 +6,8 @@
 export interface ClaimedRun {
   run_id: string;
   session_id: string;
+  /** 平台下发的 agent 标识（共享池选包依据；旧平台可不带）。 */
+  agent_slug?: string;
   definition_rev: number;
   /** 平台侧同步窗口参数（秒）；运行时仅记录日志，窗口内完不成由平台转异步句柄。 */
   threshold_seconds: number;

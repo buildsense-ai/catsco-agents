@@ -1,0 +1,10 @@
+{
+  "schema": "catsco.service-agent.v1",
+  "slug": "weekly-report",
+  "name": "周报助手",
+  "prompt": { "system": "system-prompt.md" },
+  "model": { "primary": { "provider": "anthropic", "model": "claude-sonnet-5-5", "reasoning_effort": "medium" }, "fallbacks": [] },
+  "behavior": { "async_threshold_seconds": 60, "max_run_seconds": 600 },
+  "skills": [],
+  "knowledge": { "files": [] }
+}
