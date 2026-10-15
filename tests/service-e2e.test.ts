@@ -4,7 +4,7 @@ import * as http from 'node:http';
 import * as path from 'node:path';
 import { spawn } from 'node:child_process';
 import { ServiceDaemon } from '../src/service/daemon';
-import { loadAgentPackage } from '../src/service/agent-package';
+import { loadAllAgentPackages } from '../src/service/agent-package';
 import { loadServiceConfig, ServiceConfig } from '../src/service/config';
 import { RelayModelClient } from '../src/service/model-client';
 import { PlatformClient } from '../src/service/platform-client';
@@ -220,6 +220,7 @@ test('scenario A: daemon completes a run end to end', async (t) => {
   const run: ClaimedRun = {
     run_id: 'run_a1',
     session_id: 'sess_a1',
+    agent_slug: 'hello',
     definition_rev: 1,
     threshold_seconds: 60,
     input: { text: 'ping' },
@@ -233,10 +234,10 @@ test('scenario A: daemon completes a run end to end', async (t) => {
   });
 
   const config = e2eConfig(platform.url, relay.url, 'inst-e2e');
-  const pkg = await loadAgentPackage(config.agentsDir, 'hello');
+  const packages = await loadAllAgentPackages(config.agentsDir);
   const daemon = new ServiceDaemon({
     config,
-    pkg,
+    packages,
     model: new RelayModelClient(config.relayBaseUrl),
     platform: new PlatformClient(config),
   });
@@ -280,6 +281,7 @@ test('scenario B: kill child daemon then resume from checkpoint without restarti
   const run: ClaimedRun = {
     run_id: 'run_b1',
     session_id: 'sess_b1',
+    agent_slug: 'hello',
     definition_rev: 1,
     threshold_seconds: 60,
     input: { text: 'carry on' },
@@ -342,10 +344,10 @@ test('scenario B: kill child daemon then resume from checkpoint without restarti
 
   // 新实例接管：不重头（第一段历史原样保留 + 追加本轮输入）
   const config = e2eConfig(platform.url, relay.url, 'inst-resumer');
-  const pkg = await loadAgentPackage(config.agentsDir, 'hello');
+  const packages = await loadAllAgentPackages(config.agentsDir);
   const daemon = new ServiceDaemon({
     config,
-    pkg,
+    packages,
     model: new RelayModelClient(config.relayBaseUrl),
     platform: new PlatformClient(config),
   });

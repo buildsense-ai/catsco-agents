@@ -18,7 +18,8 @@ import { ClaimedRun, InstanceMetrics } from './types';
 
 export interface ServiceDaemonDeps {
   config: ServiceConfig;
-  pkg: AgentPackage;
+  /** 已装载的数据包（共享池：按 claim 的 agent_slug 选包）。 */
+  packages: Map<string, AgentPackage>;
   model: ModelClient;
   platform: PlatformClient;
   checkpointCache?: CheckpointCache;
@@ -99,6 +100,20 @@ export class ServiceDaemon {
   }
 
   private async executeRun(run: ClaimedRun, controller: AbortController): Promise<void> {
+    const slug = (run.agent_slug ?? '').trim();
+    let pkg = slug ? this.deps.packages.get(slug) : undefined;
+    if (!pkg && !slug && this.deps.packages.size === 1) {
+      // 旧平台不下发 agent_slug：单包实例直接用它（向后兼容）。
+      pkg = this.deps.packages.values().next().value as AgentPackage;
+    }
+    if (!pkg) {
+      const errorText = `agent package not loaded: ${slug || '(agent_slug missing)'}`;
+      console.warn(`service daemon ${errorText} run=${run.run_id}`);
+      await this.deps.platform.failRun(run.run_id, errorText, false).catch((err: Error) => {
+        console.warn(`service daemon fail report failed (${run.run_id}): ${err.message}`);
+      });
+      return;
+    }
     const startedAt = Date.now();
     const resumed = Boolean(run.checkpoint?.snapshot);
     const renewal = setInterval(() => {
@@ -107,7 +122,7 @@ export class ServiceDaemon {
       });
     }, this.deps.config.heartbeatMs);
     try {
-      const outcome = await runClaimedRun(run, this.deps.pkg, this.deps.model, this.deps.platform, {
+      const outcome = await runClaimedRun(run, pkg, this.deps.model, this.deps.platform, {
         signal: controller.signal,
         checkpointCache: this.deps.checkpointCache,
         onCompleted: (info) => {

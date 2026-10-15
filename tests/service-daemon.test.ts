@@ -17,10 +17,26 @@ const pkg: AgentPackage = {
   knowledge: { files: [] },
 };
 
-function makeRun(id: string): ClaimedRun {
+const otherPkg: AgentPackage = {
+  slug: 'other',
+  name: 'Other',
+  systemPrompt: 'other-sp',
+  model: { primary: { provider: 'anthropic', model: 'm2' }, fallbacks: [] },
+  behavior: { asyncThresholdSeconds: 60, maxRunSeconds: 600 },
+  skills: [],
+  knowledge: { files: [] },
+};
+
+const packages = new Map<string, AgentPackage>([
+  ['mini', pkg],
+  ['other', otherPkg],
+]);
+
+function makeRun(id: string, slug = 'mini'): ClaimedRun {
   return {
     run_id: id,
     session_id: `sess_${id}`,
+    agent_slug: slug,
     definition_rev: 1,
     threshold_seconds: 60,
     input: { text: id },
@@ -31,6 +47,7 @@ function makeRun(id: string): ClaimedRun {
 interface FakePlatformState {
   queue: ClaimedRun[];
   completes: string[];
+  failures: { runId: string; errorText: string; retryable: boolean }[];
   checkpoints: string[];
   events: { runId: string; type: string }[];
   runHeartbeats: string[];
@@ -58,8 +75,8 @@ function fakePlatform(state: FakePlatformState): PlatformClient {
     async completeRun(runId: string) {
       state.completes.push(runId);
     },
-    async failRun() {
-      /* no-op */
+    async failRun(runId: string, errorText: string, retryable: boolean) {
+      state.failures.push({ runId, errorText, retryable });
     },
     async heartbeatInstance() {
       state.instanceHeartbeats += 1;
@@ -71,6 +88,7 @@ function emptyState(queue: ClaimedRun[]): FakePlatformState {
   return {
     queue,
     completes: [],
+    failures: [],
     checkpoints: [],
     events: [],
     runHeartbeats: [],
@@ -117,7 +135,7 @@ test('claims up to concurrency and completes runs', async (t) => {
       return { text: `out:${last.content}`, usage: { promptTokens: 1, completionTokens: 1 } };
     },
   };
-  const daemon = new ServiceDaemon({ config, pkg, model, platform: fakePlatform(state) });
+  const daemon = new ServiceDaemon({ config, packages, model, platform: fakePlatform(state) });
   t.after(() => daemon.shutdown());
   const running = daemon.run();
 
@@ -149,7 +167,7 @@ test('renews run lease while running', async (t) => {
       return { text: 'ok', usage: { promptTokens: 1, completionTokens: 1 } };
     },
   };
-  const daemon = new ServiceDaemon({ config, pkg, model, platform: fakePlatform(state) });
+  const daemon = new ServiceDaemon({ config, packages, model, platform: fakePlatform(state) });
   t.after(() => daemon.shutdown());
   const running = daemon.run();
 
@@ -180,7 +198,7 @@ test('graceful shutdown stops claiming and abandons mid-run', async (t) => {
       });
     },
   };
-  const daemon = new ServiceDaemon({ config, pkg, model, platform: fakePlatform(state) });
+  const daemon = new ServiceDaemon({ config, packages, model, platform: fakePlatform(state) });
   t.after(() => daemon.shutdown());
   const running = daemon.run();
 
@@ -199,4 +217,60 @@ test('graceful shutdown stops claiming and abandons mid-run', async (t) => {
   const metrics = daemon.metricsSnapshot();
   assert.equal(metrics.failed, 1);
   assert.equal(metrics.active_runs, 0);
+});
+
+test('selects the package by claimed agent_slug', async (t) => {
+  const state = emptyState([makeRun('r1', 'other')]);
+  const config = configFor({
+    CATS_SERVICE_CONCURRENCY: '1',
+    CATS_SERVICE_POLL_INTERVAL_MS: '25',
+    CATS_SERVICE_HEARTBEAT_MS: '1000',
+    CATS_SERVICE_SHUTDOWN_GRACE_MS: '500',
+  });
+  const seen: { system: string; models: string[] }[] = [];
+  const model: ModelClient = {
+    async run(req): Promise<ModelRunResult> {
+      seen.push({ system: req.systemPrompt, models: req.models });
+      return { text: 'ok', usage: { promptTokens: 1, completionTokens: 1 } };
+    },
+  };
+  const daemon = new ServiceDaemon({ config, packages, model, platform: fakePlatform(state) });
+  t.after(() => daemon.shutdown());
+  const running = daemon.run();
+
+  await waitFor(() => state.completes.length === 1, 5000);
+  await daemon.shutdown();
+  await running;
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].system, 'other-sp', 'run must use the package named by agent_slug');
+  assert.deepEqual(seen[0].models, ['m2']);
+  assert.equal(state.failures.length, 0);
+});
+
+test('fails the run when the claimed package is not loaded', async (t) => {
+  const state = emptyState([makeRun('r1', 'missing')]);
+  const config = configFor({
+    CATS_SERVICE_CONCURRENCY: '1',
+    CATS_SERVICE_POLL_INTERVAL_MS: '25',
+    CATS_SERVICE_HEARTBEAT_MS: '1000',
+    CATS_SERVICE_SHUTDOWN_GRACE_MS: '500',
+  });
+  const model: ModelClient = {
+    async run(): Promise<ModelRunResult> {
+      throw new Error('must not call the model for an unknown package');
+    },
+  };
+  const daemon = new ServiceDaemon({ config, packages, model, platform: fakePlatform(state) });
+  t.after(() => daemon.shutdown());
+  const running = daemon.run();
+
+  await waitFor(() => state.failures.length === 1, 5000);
+  await daemon.shutdown();
+  await running;
+
+  assert.equal(state.failures[0].runId, 'r1');
+  assert.equal(state.failures[0].retryable, false);
+  assert.ok(state.failures[0].errorText.includes('missing'), state.failures[0].errorText);
+  assert.equal(state.completes.length, 0);
 });
