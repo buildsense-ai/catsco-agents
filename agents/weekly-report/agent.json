@@ -12,5 +12,12 @@
       "path": "skills/company-style.md"
     }
   ],
-  "knowledge": { "files": [] }
+  "knowledge": {
+    "files": [
+      {
+        "path": "knowledge/glossary.md",
+        "sha256": "86692c92d5b344e27ff8ddddcbd95adaaec7272f7f9b85f61e5f68a86f8be72d"
+      }
+    ]
+  }
 }

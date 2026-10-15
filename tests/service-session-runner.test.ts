@@ -202,6 +202,7 @@ const skilledPkg: AgentPackage = {
   ...pkg,
   slug: 'skilled',
   skills: [{ name: 'helper', description: '格式化助手技能', content: '# Helper\n按步骤执行' }],
+  knowledge: { files: [{ path: 'knowledge/faq.md', content: '标准版￥99/月' }] },
 };
 
 test('skill loop: model loads a skill then completes with merged usage', async () => {
@@ -228,6 +229,9 @@ test('skill loop: model loads a skill then completes with merged usage', async (
   assert.ok(calls[0].tools && calls[0].tools.length === 1 && calls[0].tools[0].name === 'skill');
   assert.ok(calls[0].systemPrompt.includes('## 可用技能'));
   assert.ok(calls[0].systemPrompt.includes('helper'));
+  // 知识（全量注入档）也在 system prompt
+  assert.ok(calls[0].systemPrompt.includes('## 知识'));
+  assert.ok(calls[0].systemPrompt.includes('标准版￥99/月'));
 
   // 第二轮消息链：assistant(tool_calls) + tool(技能全文)
   const secondMessages = calls[1].messages;
