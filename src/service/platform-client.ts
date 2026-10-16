@@ -65,6 +65,17 @@ export class PlatformClient {
   }
 
   /**
+   * 回合制返问收尾（设计 §3.3-8）：run 以 awaiting_input 终结并触发平台回注；
+   * 调用方补充 = 同一会话的下一次 tools/call。语义同 completeRun（幂等/错态 409）。
+   */
+  async awaitInput(runId: string, resultId: string, result: ServiceRunResult): Promise<void> {
+    await this.request('POST', `/internal/service-runs/${encodeURIComponent(runId)}/await-input`, {
+      result_id: resultId,
+      result,
+    });
+  }
+
+  /**
    * 上报不可恢复失败。平台侧端点=联调前待补（阶段 1 运行时以
    * checkpoint+abandoned → 租约过期接管为主路径）；接口保留，端点就位即可用。
    */

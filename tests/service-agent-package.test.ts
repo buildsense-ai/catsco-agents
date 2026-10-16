@@ -106,4 +106,32 @@ test('loads the hello pilot package from the repo agents dir', async () => {
   assert.equal(pkg.model.primary.model, 'MiniMax-M3');
   assert.ok(pkg.systemPrompt.length > 0);
   assert.equal(pkg.behavior.asyncThresholdSeconds, 60);
+  // 试点应用启用回合制返问（allow_ask_user=true；设计 §3.3-8）
+  assert.equal(pkg.behavior.allowAskUser, true);
+});
+
+test('allow_ask_user defaults to false and parses true when set', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-ask-'));
+  const dir = path.join(tmp, 'asker');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'system-prompt.md'), 'sp');
+  const base = {
+    schema: 'catsco.service-agent.v1',
+    slug: 'asker',
+    name: 'Asker',
+    prompt: { system: 'system-prompt.md' },
+    model: { primary: { provider: 'anthropic', model: 'm' } },
+  };
+  // 缺省（无 behavior）
+  await fs.writeFile(path.join(dir, 'agent.json'), JSON.stringify(base));
+  const plain = await loadAgentPackage(tmp, 'asker');
+  assert.equal(plain.behavior.allowAskUser, false);
+  // 显式开启
+  await fs.writeFile(
+    path.join(dir, 'agent.json'),
+    JSON.stringify({ ...base, behavior: { async_threshold_seconds: 45, allow_ask_user: true } }),
+  );
+  const asker = await loadAgentPackage(tmp, 'asker');
+  assert.equal(asker.behavior.allowAskUser, true);
+  assert.equal(asker.behavior.asyncThresholdSeconds, 45);
 });

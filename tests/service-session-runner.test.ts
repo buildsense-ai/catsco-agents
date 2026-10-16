@@ -30,7 +30,7 @@ const pkg: AgentPackage = {
 };
 
 interface RecordedCall {
-  kind: 'event' | 'checkpoint' | 'complete' | 'fail';
+  kind: 'event' | 'checkpoint' | 'complete' | 'fail' | 'await';
   args: unknown[];
 }
 
@@ -45,6 +45,9 @@ function fakePlatform(record: RecordedCall[]) {
     },
     async completeRun(runId: string, resultId: string, result: unknown) {
       record.push({ kind: 'complete', args: [runId, resultId, result] });
+    },
+    async awaitInput(runId: string, resultId: string, result: unknown) {
+      record.push({ kind: 'await', args: [runId, resultId, result] });
     },
     async failRun(runId: string, errorText: string, retryable: boolean) {
       record.push({ kind: 'fail', args: [runId, errorText, retryable] });
@@ -290,4 +293,106 @@ test('skill loop: exceeding max rounds without text abandons', async () => {
   assert.equal(outcome, 'abandoned');
   assert.equal(record.filter((r) => r.kind === 'complete').length, 0);
   assert.equal(record.filter((r) => r.kind === 'checkpoint').length, 1);
+});
+
+// ---- 阶段 2：回合制返问（ask_user → awaiting_input；设计 §3.3-8）----
+
+const askPkg: AgentPackage = {
+  ...pkg,
+  slug: 'asker',
+  behavior: { ...pkg.behavior, allowAskUser: true },
+};
+
+test('ask_user disabled by default: tool not exposed to the model', async () => {
+  const record: RecordedCall[] = [];
+  const platform = fakePlatform(record);
+  const { model, calls } = scriptedModel(() => ({ text: 'plain', usage: { promptTokens: 1, completionTokens: 1 } }));
+  const outcome = await runClaimedRun(baseRun, pkg, model, platform, { progressThrottleMs: 0 });
+  assert.equal(outcome, 'completed');
+  assert.equal(calls[0].tools, undefined, '无 allowAskUser/技能 = 不暴露任何工具');
+});
+
+test('ask_user with allowAskUser: run ends awaiting_input with checkpoint and await-input call', async () => {
+  const record: RecordedCall[] = [];
+  const platform = fakePlatform(record);
+  const completed: unknown[] = [];
+  const { model, calls } = scriptedModel(() => ({
+    text: '先问一下',
+    usage: { promptTokens: 2, completionTokens: 3 },
+    toolCalls: [
+      { id: 'ask_1', type: 'function', function: { name: 'ask_user', arguments: '{"question":"请提供周报的日期范围"}' } },
+    ],
+  }));
+  const outcome = await runClaimedRun(baseRun, askPkg, model, platform, {
+    progressThrottleMs: 0,
+    onCompleted: (info) => completed.push(info),
+  });
+
+  assert.equal(outcome, 'awaiting_input');
+  // ask_user 已暴露给模型
+  assert.ok(calls[0].tools && calls[0].tools.some((tool) => tool.name === 'ask_user'));
+
+  // 收尾顺序：checkpoint → result 事件 → await-input（先事件后终结，与 complete 同规）
+  const kinds = record.map((r) => r.kind);
+  assert.equal(kinds.filter((k) => k === 'complete').length, 0);
+  const checkpointIdx = kinds.indexOf('checkpoint');
+  const resultIdx = kinds.lastIndexOf('event');
+  const awaitIdx = kinds.indexOf('await');
+  assert.ok(checkpointIdx > -1 && checkpointIdx < resultIdx && resultIdx < awaitIdx, `bad order: ${kinds}`);
+
+  // checkpoint：历史 + 本轮 user + assistant(问题)
+  const [, revision, snapshot] = record[checkpointIdx].args as [string, number, unknown];
+  assert.equal(revision, 1);
+  assert.deepEqual(snapshot, {
+    v: 1,
+    revision: 1,
+    history: [
+      { role: 'user', content: 'hi there' },
+      { role: 'assistant', content: '请提供周报的日期范围' },
+    ],
+  });
+
+  // result 事件与 await-input 载荷：envelope status=awaiting_input + output.question
+  const resultEvent = record[resultIdx];
+  const envelope = resultEvent.args[2] as {
+    status: string;
+    output: { question?: string };
+    usage: { prompt_tokens: number; completion_tokens: number };
+  };
+  assert.equal(envelope.status, 'awaiting_input');
+  assert.deepEqual(envelope.output, { question: '请提供周报的日期范围' });
+  assert.equal(envelope.usage.prompt_tokens, 2);
+  const [awaitRunId, awaitResultId, awaitEnvelope] = record[awaitIdx].args as [string, string, { status: string }];
+  assert.equal(awaitRunId, 'run_t1');
+  assert.equal(awaitResultId, 'awt_run_t1');
+  assert.equal(awaitEnvelope.status, 'awaiting_input');
+
+  // 计量照记（awaiting 为成功收尾）
+  assert.equal(completed.length, 1);
+  // 进展事件里有 tool=ask_user（运维可见）
+  assert.ok(
+    record.some(
+      (r) => r.kind === 'event' && r.args[1] === 'progress' && (r.args[2] as { name?: string }).name === 'ask_user',
+    ),
+  );
+});
+
+test('ask_user with empty question returns tool error and continues', async () => {
+  const record: RecordedCall[] = [];
+  const platform = fakePlatform(record);
+  const { model, calls } = scriptedModel(() => {
+    if (calls.length === 1) {
+      return {
+        text: '',
+        usage: { promptTokens: 1, completionTokens: 1 },
+        toolCalls: [{ id: 'ask_1', type: 'function', function: { name: 'ask_user', arguments: '{}' } }],
+      };
+    }
+    return { text: '好了', usage: { promptTokens: 1, completionTokens: 1 } };
+  });
+  const outcome = await runClaimedRun(baseRun, askPkg, model, platform, { progressThrottleMs: 0 });
+  assert.equal(outcome, 'completed');
+  const toolMsg = calls[1].messages.find((m) => m.role === 'tool');
+  assert.ok(toolMsg && String(toolMsg.content).includes('question'));
+  assert.equal(record.filter((r) => r.kind === 'await').length, 0);
 });

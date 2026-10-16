@@ -46,7 +46,12 @@ export interface AgentPackage {
   name: string;
   systemPrompt: string;
   model: { primary: ModelBinding; fallbacks: ModelBinding[] };
-  behavior: { asyncThresholdSeconds: number; maxRunSeconds: number };
+  behavior: {
+    asyncThresholdSeconds: number;
+    maxRunSeconds: number;
+    /** 允许模型经 ask_user 工具发起回合制返问（设计 §3.3-8；默认关闭）。 */
+    allowAskUser: boolean;
+  };
   skills: LoadedSkill[];
   knowledge: { files: LoadedKnowledge[] };
 }
@@ -63,7 +68,7 @@ interface AgentManifest {
   name?: string;
   prompt?: { system?: string };
   model?: { primary?: Partial<ModelBinding>; fallbacks?: Partial<ModelBinding>[] };
-  behavior?: { async_threshold_seconds?: number; max_run_seconds?: number };
+  behavior?: { async_threshold_seconds?: number; max_run_seconds?: number; allow_ask_user?: boolean };
   skills?: SkillRef[];
   knowledge?: { files?: KnowledgeFileRef[] };
 }
@@ -167,6 +172,7 @@ export async function loadAgentPackage(agentsDir: string, slug: string): Promise
     behavior: {
       asyncThresholdSeconds: Number.isFinite(asyncThreshold) ? (asyncThreshold as number) : 60,
       maxRunSeconds: Number.isFinite(maxRun) ? (maxRun as number) : 600,
+      allowAskUser: manifest.behavior?.allow_ask_user === true,
     },
     skills,
     knowledge: { files: knowledge },

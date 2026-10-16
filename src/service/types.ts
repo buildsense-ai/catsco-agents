@@ -24,8 +24,13 @@ export interface ServiceRunResult {
   contract_version: 'catsco.service-run-result.v1';
   run_id: string;
   session_id: string;
-  status: 'completed';
-  output: { text: string };
+  /**
+   * completed：正常完成（output.text=答复）；
+   * awaiting_input：回合制返问收尾（output.question=待补充问题；调用方以同一
+   * session_id 的下一次 tools/call 补充续跑——设计 §3.3-8）。
+   */
+  status: 'completed' | 'awaiting_input';
+  output: { text?: string; question?: string };
   /** cost 未知时省略；权威成本以 relay 记账为准。 */
   usage: { prompt_tokens: number; completion_tokens: number; cost_cny?: number };
 }

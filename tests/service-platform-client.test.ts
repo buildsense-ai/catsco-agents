@@ -79,6 +79,10 @@ async function startMockPlatform(opts: { failFirstClaim?: boolean } = {}): Promi
         send(200, { completed: true, idempotent: false });
         return;
       }
+      if (path.endsWith('/await-input')) {
+        send(200, { awaiting_input: true, idempotent: false });
+        return;
+      }
       if (path.endsWith('/fail')) {
         send(200, { ok: true });
         return;
@@ -142,6 +146,15 @@ test('mutations hit right routes and 4xx rejects without retry', async (t) => {
     output: { text: 'ok' },
     usage: { prompt_tokens: 3, completion_tokens: 5 },
   });
+  // 回合制返问收尾（设计 §3.3-8）：await-input 端点
+  await client.awaitInput('run_1', 'awt_run_1', {
+    contract_version: 'catsco.service-run-result.v1',
+    run_id: 'run_1',
+    session_id: 'sess_1',
+    status: 'awaiting_input',
+    output: { question: '请补充素材' },
+    usage: { prompt_tokens: 2, completion_tokens: 1 },
+  });
   await client.heartbeatInstance(1, {
     active_runs: 1,
     completed: 0,
@@ -156,7 +169,22 @@ test('mutations hit right routes and 4xx rejects without retry', async (t) => {
   assert.ok(paths.includes('/internal/service-runs/run_1/events'));
   assert.ok(paths.includes('/internal/service-runs/run_1/checkpoint'));
   assert.ok(paths.includes('/internal/service-runs/run_1/complete'));
+  assert.ok(paths.includes('/internal/service-runs/run_1/await-input'));
   assert.ok(paths.includes('/internal/service-instances/inst-test/heartbeat'));
+  const awaitRequest = server.requests.find((r) => r.path === '/internal/service-runs/run_1/await-input');
+  assert.ok(awaitRequest);
+  assert.equal(awaitRequest.auth, 'Bearer inst-token');
+  assert.deepEqual(awaitRequest.body, {
+    result_id: 'awt_run_1',
+    result: {
+      contract_version: 'catsco.service-run-result.v1',
+      run_id: 'run_1',
+      session_id: 'sess_1',
+      status: 'awaiting_input',
+      output: { question: '请补充素材' },
+      usage: { prompt_tokens: 2, completion_tokens: 1 },
+    },
+  });
 
   const before = server.requests.length;
   await assert.rejects(client.appendEvent('run_unknown', 'progress', {}), /404/);
