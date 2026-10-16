@@ -1,0 +1,189 @@
+name: Publish Service Agents
+
+# Agent 包发布自动化（"发布即上架"）：替代本地 scripts/publish-agent.mjs 手工执行。
+# - push 到 main 且改动 agents/** → 自动发布变更的 slug（PR 评审即发布门）；
+# - workflow_dispatch 手动：指定 slug / dry_run / --republish 回滚重发。
+# 机制与本地脚本完全一致：远端 curl（token 从平台容器 env 现取）+ bundle 走 ssh stdin。
+# 幂等性：同内容 hash 的发布不建新版本（仅重发覆盖 definition_json）；force/republish 才建新版本。
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: 'agent slug（如 hello / weekly-report；留空=发布最近一次提交改动的 agents）'
+        required: false
+        type: string
+      dry_run:
+        description: '仅打包+打印 hash，不发布'
+        required: false
+        type: boolean
+        default: false
+      republish_hash:
+        description: '回滚：从平台拉回该 package_hash 并 force 重发为新版本（64 位 hex；优先于 slug）'
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - 'agents/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-service-agents
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      INPUT_SLUG: ${{ inputs.slug }}
+      INPUT_DRY_RUN: ${{ inputs.dry_run }}
+      INPUT_REPUBLISH_HASH: ${{ inputs.republish_hash }}
+      PUSH_BEFORE: ${{ github.event.before }}
+      PUSH_AFTER: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Prepare SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          {
+            echo "Host cats-ctyun"
+            echo "  HostName ${SSH_HOST}"
+            echo "  User ${SSH_USER}"
+            echo "  IdentityFile ~/.ssh/id_ed25519"
+            echo "  StrictHostKeyChecking accept-new"
+            echo "  ConnectTimeout 20"
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Resolve mode and slugs
+        id: resolve
+        run: |
+          set -euo pipefail
+          mode=""
+          slugs=""
+
+          if [ -n "${INPUT_REPUBLISH_HASH}" ]; then
+            mode="republish"
+          elif [ -n "${INPUT_SLUG}" ]; then
+            mode="publish"
+            slugs="${INPUT_SLUG}"
+          else
+            mode="publish"
+            # push 场景：diff before..after；dispatch 无入参：最近一次提交。
+            if [ "${EVENT_NAME}" = "push" ] \
+              && [ "${PUSH_BEFORE}" != "0000000000000000000000000000000000000000" ] \
+              && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+              range="${PUSH_BEFORE}..${PUSH_AFTER}"
+            else
+              range="HEAD~1..HEAD"
+            fi
+            echo "diff range: ${range}"
+            slugs="$(git diff --name-only "$range" | awk -F/ '/^agents\/[^\/]+\//{print $2}' \
+              | sort -u | while read -r s; do [ -n "$s" ] && [ -d "agents/$s" ] && echo "$s"; done \
+              | paste -sd, -)"
+          fi
+
+          echo "mode=${mode}" >> "$GITHUB_OUTPUT"
+          echo "slugs=${slugs}" >> "$GITHUB_OUTPUT"
+          echo "resolved: mode=${mode} slugs=${slugs:-<none>}"
+
+      - name: SSH preflight
+        if: ${{ !(inputs.dry_run) || inputs.republish_hash != '' }}
+        run: |
+          ssh -o BatchMode=yes cats-ctyun \
+            'echo ssh-ok; docker exec catscompany_prod-server-1 printenv CATS_SERVICE_INSTANCE_TOKEN > /dev/null && echo token-present'
+
+      - name: Publish
+        id: publish
+        run: |
+          set -uo pipefail
+          mode='${{ steps.resolve.outputs.mode }}'
+          slugs='${{ steps.resolve.outputs.slugs }}'
+          dry_flag=""
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ] && [ "${INPUT_DRY_RUN}" = "true" ]; then
+            dry_flag="--dry-run"
+          fi
+
+          run_one() {
+            local label="$1"; shift
+            local logfile
+            logfile="$(mktemp)"
+            echo "::group::publish ${label}"
+            if node scripts/publish-agent.mjs "$@" --ssh cats-ctyun 2>&1 | tee "$logfile"; then
+              echo "${label}|ok|$(grep -Eo 'package_hash=[a-f0-9]{64}' "$logfile" | tail -n1 | cut -d= -f2)" >> "${RESULT_FILE}"
+            else
+              echo "${label}|FAILED|" >> "${RESULT_FILE}"
+              echo "::error::publish ${label} failed"
+            fi
+            echo "::endgroup::"
+          }
+
+          RESULT_FILE="$(mktemp)"
+          failures=0
+
+          if [ "${mode}" = "republish" ]; then
+            if [ -z "${INPUT_REPUBLISH_HASH}" ]; then
+              echo "::error::republish_hash is empty"
+              exit 2
+            fi
+            run_one "republish:${INPUT_REPUBLISH_HASH}" --republish "${INPUT_REPUBLISH_HASH}" ${dry_flag}
+          elif [ -z "${slugs}" ]; then
+            echo "nothing to publish (no agent changes detected)"
+          else
+            IFS=',' read -ra list <<< "${slugs}"
+            for slug in "${list[@]}"; do
+              [ -n "$slug" ] || continue
+              if [ ! -d "agents/$slug" ]; then
+                echo "skip ${slug}: directory missing"
+                continue
+              fi
+              run_one "${slug}" "${slug}" ${dry_flag}
+            done
+          fi
+
+          {
+            echo "## Publish Service Agents"
+            echo ""
+            echo "mode: \`${mode}\`, dry_run: \`${dry_flag:-false}\`, trigger: \`${EVENT_NAME}\`"
+            echo ""
+            echo "| target | result | package_hash |"
+            echo "| --- | --- | --- |"
+            if [ -s "${RESULT_FILE}" ]; then
+              while IFS='|' read -r label result hash; do
+                echo "| ${label} | ${result} | ${hash} |"
+              done < "${RESULT_FILE}"
+            else
+              echo "| (none) | skipped | |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          while IFS='|' read -r _label result _hash; do
+            [ "$result" = "ok" ] || failures=$((failures + 1))
+          done < "${RESULT_FILE}"
+
+          if [ "$failures" -gt 0 ]; then
+            echo "::error::${failures} publish target(s) failed"
+            exit 1
+          fi
