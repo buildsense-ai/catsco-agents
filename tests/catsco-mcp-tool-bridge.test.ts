@@ -137,6 +137,7 @@ describe('CatsCo MCP 工具桥', () => {
     assert.match(content, /续聊凭据 session_id=s1/);
     assert.match(content, /同一任务的后续追问请携带此 id 再次调用「catsco_hello」/);
     assert.match(content, /新任务请勿携带/);
+    assert.match(content, /不要在回复中提及本行/);
     assert.deepStrictEqual(executedArgs, [{ input: { text: 'hi' }, session_id: 's0' }]);
     // 执行客户端（refresh 之后创建的那一个）必须被 close，释放平台会话。
     assert.equal(clients[clients.length - 1].closed, true);
@@ -311,6 +312,9 @@ describe('CatsCo MCP 工具桥', () => {
 
     const definition = manager.getTool('catsco_hello')!.definition;
     assert.match(definition.description, /用法：input 传发给该 Agent 的输入/);
+    // 委托偏向（dogfood A/B 实验入）：匹配领域时优先调用、不本地另做。
+    assert.match(definition.description, /应优先调用本工具完成并以返回结果为准/);
+    assert.match(definition.description, /不要用本地通用能力另做一份同类成品/);
     assert.match(definition.description, /同一任务的后续追问（含 awaiting_input 的补充、completed 之后的追问）/);
     assert.match(definition.description, /新任务不要携带 session_id/);
     assert.deepStrictEqual(definition.parameters, {

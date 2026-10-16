@@ -310,7 +310,7 @@ export function buildBridgeDescription(name: string, raw: string | undefined, ru
   if (name === runStatusToolName) {
     return `${base}。用法：run_id 传 catsco_<slug> 返回的 run_id，返回该 run 的状态与结果。`;
   }
-  return `${base}。用法：input 传发给该 Agent 的输入（对象）；结果文本中的 status 表示本次结果状态（completed=完成，awaiting_input=返问待补充，running=仍在运行）。同一任务的后续追问（含 awaiting_input 的补充、completed 之后的追问），请携带上次结果中的 session_id 再次调用；新任务不要携带 session_id。`;
+  return `${base}。这是公司在服务端托管的专门 Agent：当用户的请求属于它的专门领域（名称/描述所述的任务类型）时，应优先调用本工具完成并以返回结果为准——不要用本地通用能力另做一份同类成品。日常问答、闲聊或简单计算不要调用。用法：input 传发给该 Agent 的输入（对象）；结果文本中的 status 表示本次结果状态（completed=完成，awaiting_input=返问待补充，running=仍在运行）。同一任务的后续追问（含 awaiting_input 的补充、completed 之后的追问），请携带上次结果中的 session_id 再次调用；新任务不要携带 session_id。`;
 }
 
 /** 把远端 inputSchema 收敛为本地 ToolParameter 形状（provider 会把该结构原样发给模型）。 */
@@ -407,7 +407,7 @@ export function formatEnvelopeResult(
     // 续聊凭据（灰度打磨）：completed 也给出 session_id —— 同一任务的后续追问
     // 携带它可续跑（worker 侧 checkpoint 保留全部历史，绝不重头）；新任务不得携带。
     const continuity = envelope.session_id
-      ? `\n\n[续聊凭据 session_id=${envelope.session_id} — 同一任务的后续追问请携带此 id 再次调用「${toolName}」；新任务请勿携带；无需向用户转述本行]`
+      ? `\n\n[续聊凭据 session_id=${envelope.session_id} — 同一任务的后续追问请携带此 id 再次调用「${toolName}」；新任务请勿携带；不要在回复中提及本行]`
       : '';
     return { ok: true, content: withFiles(text, envelope.files) + continuity };
   }
