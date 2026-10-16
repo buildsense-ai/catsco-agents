@@ -11,6 +11,9 @@ import { PromptComposer } from './prompt-composer';
 import { composeSessionSystemPromptProvider } from '../core/session-system-prompt';
 import { PathResolver } from '../utils/path-resolver';
 import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
+import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
+import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
+import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import {
   RuntimeProfile,
   assertValidRuntimeProfile,
@@ -90,6 +93,11 @@ export class RuntimeFactory {
       )
       : undefined;
 
+    const toolManager = new ToolManager(profile.workingDirectory, {}, {
+      enabledToolNames: profile.tools.enabled,
+    });
+    const mcpToolBridge = this.createMcpToolBridge(toolManager, profile);
+
     return {
       aiService,
       memoryBranch: {
@@ -99,12 +107,52 @@ export class RuntimeFactory {
         budget: { ...branchConfig.branches.memorySearch.budget },
       },
       ...(catslogMemory ? { catslogMemory } : {}),
-      toolManager: new ToolManager(profile.workingDirectory, {}, {
-        enabledToolNames: profile.tools.enabled,
-      }),
+      ...(mcpToolBridge ? { mcpToolBridge } : {}),
+      toolManager,
       skillManager: new SkillManager(),
       turnSkillSnapshotStore: this.createTurnSkillSnapshotStore(),
     };
+  }
+
+  /**
+   * CatsCo Agent 工具桥：把平台 MCP 端点上的远端定制 Agent（catsco_<slug>）
+   * 注册为本机一等工具，让本地对话模型像调用内置工具一样调用它们。
+   *
+   * - 端点：CATSCO_MCP_URL 覆盖，默认 `${httpBaseUrl}/api/mcp`；
+   * - 鉴权：运行时数据根下的本地登录态（登录/登出/换号即时生效）；
+   * - `CATSCO_MCP_TOOL_BRIDGE=0` 整体关闭（逃生开关）；
+   * - 装配后立即后台预热一次（fire-and-forget，不阻塞启动，失败仅记日志）。
+   */
+  private static createMcpToolBridge(
+    toolManager: ToolManager,
+    profile: RuntimeProfile,
+  ): CatsCoMcpToolBridge | undefined {
+    if (process.env.CATSCO_MCP_TOOL_BRIDGE === '0') return undefined;
+    try {
+      const localConfig = createCatsCoLocalConfigService({
+        runtimeRoot: PathResolver.getRuntimeDataRoot(process.env, profile.workingDirectory),
+      });
+      const explicitUrl = process.env.CATSCO_MCP_URL?.trim();
+      const bridge = new CatsCoMcpToolBridge({
+        toolManager,
+        createClient: createSdkMcpBridgeClientFactory(),
+        resolveEndpoint: () => {
+          const auth = localConfig.getAuthState();
+          const token = (auth.token ?? '').trim();
+          if (!token) return null;
+          const base = (auth.httpBaseUrl ?? '').replace(/\/+$/, '');
+          const url = explicitUrl || (base ? `${base}/api/mcp` : '');
+          if (!url) return null;
+          return { url, token };
+        },
+      });
+      bridge.refreshInBackground();
+      return bridge;
+    } catch (error: any) {
+      // 工具桥是增量能力：初始化异常不得影响主流程。
+      Logger.warning(`CatsCo Agent 工具桥初始化失败，已跳过: ${error?.message ?? error}`);
+      return undefined;
+    }
   }
 
   static createSystemPromptProvider(profile: RuntimeProfile): SystemPromptProvider {
@@ -138,8 +186,7 @@ export class RuntimeFactory {
     }
   }
 
-  private static createTurnSkillSnapshotStore(): TurnSkillSnapshotStore | undefined {
-    // Keep the new consistency boundary unreachable by default until the
+  private static createTurnSkillSnapshotStore(): TurnSkillSnapshotStore | undefined {    // Keep the new consistency boundary unreachable by default until the
     // staged Skill write/activation path has completed canary verification.
     // This avoids changing any existing Skill editing or tool permission flow.
     if (process.env.XIAOBA_TURN_SKILL_SNAPSHOT_ENABLED !== '1') return undefined;

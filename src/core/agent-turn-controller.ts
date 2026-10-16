@@ -167,6 +167,8 @@ export interface AgentTurnServices {
   };
   /** Device-bound CatsLog read capability, scoped to the memory branch. */
   catslogMemory?: CatsLogMemoryBackend;
+  /** CatsCo Agent 工具桥（可选）：每轮后台同步远端定制 Agent 工具。 */
+  mcpToolBridge?: import('../mcp/mcp-tool-bridge').CatsCoMcpToolBridge;
   toolManager: ToolManager;
   skillManager: SkillManager;
   turnSkillSnapshotStore?: TurnSkillSnapshotStore;
@@ -261,6 +263,8 @@ export class AgentTurnController {
       turnStartedAt,
     });
     const episodeId = this.createEpisodeId(turnNumber);
+    // CatsCo Agent 工具桥：每轮后台同步远端工具清单（fire-and-forget，绝不阻塞本轮推理）。
+    this.options.services.mcpToolBridge?.refreshInBackground();
     const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
     const branchAgentsEnabled = this.isMemoryBranchEnabled();
     const carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
