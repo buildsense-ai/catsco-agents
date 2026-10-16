@@ -263,8 +263,15 @@ export class AgentTurnController {
       turnStartedAt,
     });
     const episodeId = this.createEpisodeId(turnNumber);
-    // CatsCo Agent 工具桥：每轮后台同步远端工具清单（fire-and-forget，绝不阻塞本轮推理）。
-    this.options.services.mcpToolBridge?.refreshInBackground();
+    // CatsCo Agent 工具桥：本轮 run 的工具清单在开始时只快照一次，而桥接的首次
+    // 同步是异步的——若不等待，首发消息会整轮看不到远端工具（首轮竞态）。
+    // ensureReady 只在「从未完成过一次尝试」时有界等待（≤3s，通常 ~1s），
+    // 之后立即返回；远端清单的后续更新仍是后台 fire-and-forget（按最小间隔节流）。
+    const mcpToolBridge = this.options.services.mcpToolBridge;
+    if (mcpToolBridge) {
+      await mcpToolBridge.ensureReady();
+      mcpToolBridge.refreshInBackground();
+    }
     const previousCarryoverMemoryBranch = this.memoryBranchCarryover;
     const branchAgentsEnabled = this.isMemoryBranchEnabled();
     const carryoverMemoryBranch = branchAgentsEnabled ? previousCarryoverMemoryBranch : null;
