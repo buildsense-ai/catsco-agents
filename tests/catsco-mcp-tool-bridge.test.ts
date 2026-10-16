@@ -133,10 +133,32 @@ describe('CatsCo MCP 工具桥', () => {
     const content = (result as { content: string }).content;
     assert.match(content, /你好，我是 hello agent/);
     assert.match(content, /https:\/\/app\.catsco\.cc\/f\/1/);
+    // 续聊凭据：completed 也给出 session_id、区分后续追问与新任务。
+    assert.match(content, /续聊凭据 session_id=s1/);
+    assert.match(content, /同一任务的后续追问请携带此 id 再次调用「catsco_hello」/);
+    assert.match(content, /新任务请勿携带/);
     assert.deepStrictEqual(executedArgs, [{ input: { text: 'hi' }, session_id: 's0' }]);
     // 执行客户端（refresh 之后创建的那一个）必须被 close，释放平台会话。
     assert.equal(clients[clients.length - 1].closed, true);
     assert.equal(clients[0].closed, true);
+  });
+
+  test('completed 无 session_id：不输出续聊凭据行', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => ({
+        isError: false,
+        contentText: 'run=r0 status=completed',
+        structured: { status: 'completed', run_id: 'r0', output: { text: '纯文本结果' } },
+      }),
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    assert.equal(result.ok, true);
+    const content = (result as { content: string }).content;
+    assert.match(content, /纯文本结果/);
+    assert.doesNotMatch(content, /续聊凭据/);
   });
 
   test('awaiting_input：返问文本 + session_id 续聊指引', async () => {
@@ -289,6 +311,8 @@ describe('CatsCo MCP 工具桥', () => {
 
     const definition = manager.getTool('catsco_hello')!.definition;
     assert.match(definition.description, /用法：input 传发给该 Agent 的输入/);
+    assert.match(definition.description, /同一任务的后续追问（含 awaiting_input 的补充、completed 之后的追问）/);
+    assert.match(definition.description, /新任务不要携带 session_id/);
     assert.deepStrictEqual(definition.parameters, {
       type: 'object',
       properties: {
