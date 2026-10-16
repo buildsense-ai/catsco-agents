@@ -16,7 +16,7 @@ class FakeClient implements McpBridgeClient {
   readonly endpoints: McpBridgeEndpoint[] = [];
 
   constructor(
-    private readonly listToolsFn: () => McpBridgeToolInfo[],
+    private readonly listToolsFn: () => McpBridgeToolInfo[] | Promise<McpBridgeToolInfo[]>,
     private readonly callToolFn: (name: string, args: Record<string, unknown>) => McpBridgeCallResult,
   ) {}
 
@@ -50,7 +50,7 @@ function toolInfo(name: string, description?: string): McpBridgeToolInfo {
 }
 
 interface HarnessOptions {
-  listTools?: () => McpBridgeToolInfo[];
+  listTools?: () => McpBridgeToolInfo[] | Promise<McpBridgeToolInfo[]>;
   callTool?: (name: string, args: Record<string, unknown>) => McpBridgeCallResult;
   resolveEndpoint?: () => McpBridgeEndpoint | null;
   refreshIntervalMs?: number;
@@ -341,5 +341,56 @@ describe('CatsCo MCP 工具桥', () => {
     await bridge.refresh();
     const definition = manager.getTool('catsco_run_status')!.definition;
     assert.match(definition.description, /run_id 传 catsco_<slug> 返回的 run_id/);
+  });
+
+  test('ensureReady：等待在途刷新完成后再返回（首轮工具可见）', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const { bridge, manager } = createHarness({
+      listTools: () => gate.then(() => [toolInfo('catsco_hello')]),
+    });
+
+    bridge.refreshInBackground(); // 模拟 prewarm 在途
+    let settled = false;
+    const ready = bridge.ensureReady(2000).then(() => { settled = true; });
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
+    assert.equal(settled, false, 'ensureReady 不应在刷新完成前返回');
+
+    release();
+    await ready;
+    assert.equal(settled, true);
+    assert.deepStrictEqual(bridge.getBridgedToolNames(), ['catsco_hello']);
+    assert.equal(manager.getTool('catsco_hello') !== undefined, true);
+  });
+
+  test('ensureReady：已同步完成后立即返回且不发新请求', async () => {
+    const { bridge, clients } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      refreshIntervalMs: 60_000,
+    });
+    await bridge.refresh();
+    const started = Date.now();
+    await bridge.ensureReady(2000);
+    assert.ok(Date.now() - started < 500, 'ensureReady 应立即返回');
+    assert.equal(clients.length, 1, '不应发起新的网络请求');
+  });
+
+  test('ensureReady：刷新超时则放弃等待，不阻塞首轮', async () => {
+    const { bridge } = createHarness({
+      // 200ms 后才失败：ensureReady(30) 应早于它返回。
+      listTools: () => new Promise<McpBridgeToolInfo[]>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('slow network')), 200);
+      }),
+    });
+    const started = Date.now();
+    await bridge.ensureReady(30);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 150, `ensureReady 应在上限内返回（实测 ${elapsed}ms）`);
+    await new Promise<void>(resolve => setTimeout(resolve, 250));
+    assert.deepStrictEqual(bridge.getBridgedToolNames(), []);
+    // bootstrap 已结算：后续调用不再挂等
+    const second = Date.now();
+    await bridge.ensureReady(2000);
+    assert.ok(Date.now() - second < 100);
   });
 });

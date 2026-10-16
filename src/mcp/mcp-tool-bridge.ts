@@ -104,6 +104,7 @@ export class CatsCoMcpToolBridge {
   private readonly bridged = new Map<string, { definition: ToolDefinition }>();
   private refreshInFlight: Promise<BridgeRefreshResult | null> | null = null;
   private lastRefreshAt = 0;
+  private bootstrapSettled = false;
   private failureStreak = 0;
   private disabledReason: string | null = null;
 
@@ -128,6 +129,29 @@ export class CatsCoMcpToolBridge {
   /** 后台刷新（fire-and-forget）：任何失败只记录日志，绝不抛给调用方。 */
   refreshInBackground(): void {
     void this.refresh().catch(() => {});
+  }
+
+  /**
+   * 首轮有界就绪：工具清单在每次对话 run 开始时只快照一次，而首次同步是异步的
+   * （prewarm 在途）——首发消息若不等待，整轮对话都会看不到远端工具。
+   * 仅在「从未结算过一次同步尝试」时等待在途/新发起的刷新（上限 timeoutMs，
+   * 典型 ~1s）；已同步完成或已尝试过（含失败）则立即返回，绝不阻塞后续轮次。
+   */
+  async ensureReady(timeoutMs = 3000): Promise<void> {
+    if (this.bootstrapSettled) return;
+    const refresh = this.refresh();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        refresh.then(() => undefined, () => undefined),
+        new Promise<void>(resolve => {
+          timer = setTimeout(resolve, Math.max(1, timeoutMs));
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      this.bootstrapSettled = true;
+    }
   }
 
   /**
