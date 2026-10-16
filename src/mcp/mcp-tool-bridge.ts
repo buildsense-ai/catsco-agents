@@ -1,0 +1,426 @@
+/**
+ * CatsCo MCP 工具桥：把平台 MCP 端点（`<httpBaseUrl>/api/mcp`）上的远端工具
+ * （`catsco_<slug>` 定制 Agent 与 `catsco_run_status`）注册为本地一等工具，
+ * 让本地对话模型像调用内置工具一样调用定制 Agent。
+ *
+ * 与平台契约对齐（catsco.service-run-result.v1）：
+ * - completed：`output.text` 为答复正文；
+ * - awaiting_input：`output.question` 为返问，携带同一 `session_id` 再次调用即续跑；
+ * - running：句柄交付；本桥接会自动轮询 `catsco_run_status` 至终态或超时，再决定返回内容。
+ *
+ * 刷新策略：fire-and-forget 后台同步（绝不阻塞对话轮次），按 diff 注册/注销远端工具。
+ */
+import { Logger } from '../utils/logger';
+import type { Tool, ToolDefinition, ToolExecutionResult, ToolParameter } from '../types/tool';
+
+export interface McpBridgeToolInfo {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+}
+
+export interface McpBridgeCallResult {
+  isError: boolean;
+  /** 远端文本摘要（run=.. session=.. status=..）。 */
+  contentText: string;
+  /** structuredContent（平台 envelope），若有。 */
+  structured?: unknown;
+}
+
+export interface McpBridgeClient {
+  listTools(): Promise<McpBridgeToolInfo[]>;
+  callTool(name: string, args: Record<string, unknown>): Promise<McpBridgeCallResult>;
+  close(): Promise<void>;
+}
+
+export interface McpBridgeEndpoint {
+  url: string;
+  token: string;
+}
+
+export type McpBridgeClientFactory = (endpoint: McpBridgeEndpoint) => McpBridgeClient;
+
+export interface BridgeRefreshResult {
+  registered: string[];
+  unregistered: string[];
+}
+
+/** 平台 run 结果 envelope 的可读视图（仅取桥接需要的字段）。 */
+export interface ServiceRunEnvelopeView {
+  contract_version?: string;
+  status?: string;
+  run_id?: string;
+  session_id?: string;
+  output?: { text?: string; question?: string } | null;
+  files?: string[];
+  error?: string;
+}
+
+export interface McpToolBridgeOptions {
+  toolManager: {
+    registerTool(tool: Tool): void;
+    unregisterTool(name: string): void;
+  };
+  createClient: McpBridgeClientFactory;
+  /** 懒解析端点：未登录/未配置时返回 null。 */
+  resolveEndpoint: () => McpBridgeEndpoint | null;
+  /** 仅桥接此前缀的远端工具（默认 catsco_）。 */
+  toolNamePrefix?: string;
+  /** 最小刷新间隔（默认 30s），避免密集轮次反复打端点。 */
+  refreshIntervalMs?: number;
+  runStatusToolName?: string;
+  /** run 句柄轮询总时长（默认 90s）；<=0 关闭自动轮询。 */
+  runPollTimeoutMs?: number;
+  runPollIntervalMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_TOOL_PREFIX = 'catsco_';
+const DEFAULT_REFRESH_INTERVAL_MS = 30_000;
+const DEFAULT_RUN_STATUS_TOOL = 'catsco_run_status';
+export const DEFAULT_RUN_POLL_TIMEOUT_MS = 90_000;
+const DEFAULT_RUN_POLL_INTERVAL_MS = 5_000;
+
+const TOOL_ERROR_MESSAGES: Record<string, string> = {
+  unauthorized: 'CatsCo 登录态无效或已过期，请在 CatsCo 面板重新登录后重试。',
+  subscription_required: '当前账号尚未添加该 Agent 工具，请先在「Agent 工具」面板添加后重试。',
+  run_id_required: '缺少 run_id 参数。',
+  run_not_found: '未找到该 run（可能已过期，或不属于当前账号）。',
+};
+
+export class CatsCoMcpToolBridge {
+  private readonly toolManager: McpToolBridgeOptions['toolManager'];
+  private readonly createClient: McpBridgeClientFactory;
+  private readonly resolveEndpoint: () => McpBridgeEndpoint | null;
+  private readonly toolNamePrefix: string;
+  private readonly refreshIntervalMs: number;
+  private readonly runStatusToolName: string;
+  private readonly runPollTimeoutMs: number;
+  private readonly runPollIntervalMs: number;
+  private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  private readonly bridged = new Map<string, { definition: ToolDefinition }>();
+  private refreshInFlight: Promise<BridgeRefreshResult | null> | null = null;
+  private lastRefreshAt = 0;
+  private failureStreak = 0;
+  private disabledReason: string | null = null;
+
+  constructor(options: McpToolBridgeOptions) {
+    this.toolManager = options.toolManager;
+    this.createClient = options.createClient;
+    this.resolveEndpoint = options.resolveEndpoint;
+    this.toolNamePrefix = options.toolNamePrefix ?? DEFAULT_TOOL_PREFIX;
+    this.refreshIntervalMs = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
+    this.runStatusToolName = options.runStatusToolName ?? DEFAULT_RUN_STATUS_TOOL;
+    this.runPollTimeoutMs = options.runPollTimeoutMs ?? DEFAULT_RUN_POLL_TIMEOUT_MS;
+    this.runPollIntervalMs = options.runPollIntervalMs ?? DEFAULT_RUN_POLL_INTERVAL_MS;
+    this.now = options.now ?? Date.now;
+    this.sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
+  }
+
+  /** 当前已桥接的远端工具名（诊断/测试用）。 */
+  getBridgedToolNames(): string[] {
+    return [...this.bridged.keys()];
+  }
+
+  /** 后台刷新（fire-and-forget）：任何失败只记录日志，绝不抛给调用方。 */
+  refreshInBackground(): void {
+    void this.refresh().catch(() => {});
+  }
+
+  /**
+   * 同步远端工具清单：新增注册、下线注销、定义变化时替换。
+   * 端点为 null（未登录）或处于最小间隔内时直接跳过。
+   */
+  async refresh(): Promise<BridgeRefreshResult | null> {
+    if (this.refreshInFlight) return this.refreshInFlight;
+    const nowMs = this.now();
+    if (this.lastRefreshAt !== 0 && nowMs - this.lastRefreshAt < this.refreshIntervalMs) {
+      return null;
+    }
+    const run = this.doRefresh().finally(() => {
+      this.lastRefreshAt = this.now();
+      this.refreshInFlight = null;
+    });
+    this.refreshInFlight = run;
+    return run;
+  }
+
+  private async doRefresh(): Promise<BridgeRefreshResult | null> {
+    const endpoint = this.resolveEndpoint();
+    if (!endpoint) {
+      this.noteDisabled('未配置 CatsCo 登录态');
+      return null;
+    }
+    const client = this.createClient(endpoint);
+    try {
+      const infos = await client.listTools();
+      const seen = new Set<string>();
+      const registered: string[] = [];
+      const unregistered: string[] = [];
+
+      for (const info of infos) {
+        if (!info?.name || !info.name.startsWith(this.toolNamePrefix)) continue;
+        seen.add(info.name);
+        const definition = this.buildDefinition(info);
+        const existing = this.bridged.get(info.name);
+        if (existing && sameDefinition(existing.definition, definition)) continue;
+        const adapter = this.createRemoteTool(definition);
+        this.bridged.set(info.name, { definition });
+        this.toolManager.registerTool(adapter);
+        registered.push(info.name);
+      }
+
+      for (const name of [...this.bridged.keys()]) {
+        if (seen.has(name)) continue;
+        this.toolManager.unregisterTool(name);
+        this.bridged.delete(name);
+        unregistered.push(name);
+      }
+
+      this.failureStreak = 0;
+      this.disabledReason = null;
+      if (registered.length > 0 || unregistered.length > 0) {
+        Logger.info(`CatsCo Agent 工具桥已同步: +[${registered.join(',')}] -[${unregistered.join(',')}]`);
+      }
+      return { registered, unregistered };
+    } catch (error: any) {
+      this.failureStreak += 1;
+      // 首次与每 10 次失败留痕，避免离线场景刷屏。
+      if (this.failureStreak === 1 || this.failureStreak % 10 === 0) {
+        Logger.warning(`CatsCo Agent 工具桥刷新失败（第 ${this.failureStreak} 次）: ${error?.message ?? error}`);
+      }
+      return null;
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }
+
+  private noteDisabled(reason: string): void {
+    if (this.disabledReason !== reason) {
+      this.disabledReason = reason;
+      Logger.info(`CatsCo Agent 工具桥未启用: ${reason}`);
+    }
+  }
+
+  private buildDefinition(info: McpBridgeToolInfo): ToolDefinition {
+    return {
+      name: info.name,
+      description: buildBridgeDescription(info.name, info.description, this.runStatusToolName),
+      parameters: toToolParameters(info.inputSchema),
+    };
+  }
+
+  private createRemoteTool(definition: ToolDefinition): Tool {
+    return {
+      definition,
+      execute: (args: any) => this.executeRemoteTool(definition.name, toArgsRecord(args)),
+    };
+  }
+
+  /** 执行远端工具的完整链路：连接 → call →（running 时轮询）→ 映射结果。 */
+  async executeRemoteTool(toolName: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const endpoint = this.resolveEndpoint();
+    if (!endpoint) {
+      return {
+        ok: false,
+        errorCode: 'catsco_mcp_not_configured',
+        message: '未配置 CatsCo 登录态（缺少 token 或服务地址），无法调用远端 Agent 工具。',
+      };
+    }
+    const client = this.createClient(endpoint);
+    try {
+      const first = await client.callTool(toolName, args);
+      if (first.isError) {
+        const code = first.contentText.trim() || 'catsco_mcp_tool_error';
+        return { ok: false, errorCode: code, message: mapToolErrorMessage(code) };
+      }
+      let envelope = parseServiceRunEnvelope(first.structured);
+      if (toolName !== this.runStatusToolName && this.runPollTimeoutMs > 0) {
+        envelope = await this.pollRunUntilTerminal(client, envelope);
+      }
+      return formatEnvelopeResult(envelope, first.contentText, toolName);
+    } catch (error: any) {
+      return {
+        ok: false,
+        errorCode: 'catsco_mcp_unreachable',
+        message: `无法连接 CatsCo MCP 端点: ${error?.message ?? error}`,
+        retryable: true,
+      };
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }
+
+  /** running 句柄交付后的自动轮询：终态或超时即返回当前 envelope。 */
+  private async pollRunUntilTerminal(
+    client: McpBridgeClient,
+    envelope: ServiceRunEnvelopeView | null,
+  ): Promise<ServiceRunEnvelopeView | null> {
+    if (!envelope || envelope.status !== 'running' || !envelope.run_id) return envelope;
+    const deadline = this.now() + this.runPollTimeoutMs;
+    let current = envelope;
+    while (current.status === 'running' && current.run_id && this.now() < deadline) {
+      await this.sleep(this.runPollIntervalMs);
+      if (this.now() >= deadline) break;
+      let poll: McpBridgeCallResult;
+      try {
+        poll = await client.callTool(this.runStatusToolName, { run_id: current.run_id });
+      } catch {
+        return current;
+      }
+      if (poll.isError) return current;
+      const next = parseServiceRunEnvelope(poll.structured);
+      if (!next || !next.status) return current;
+      current = next;
+    }
+    return current;
+  }
+}
+
+/** 远端工具描述太薄（只有名称/slug/版本），补充用法指引，便于本地模型正确调用。 */
+export function buildBridgeDescription(name: string, raw: string | undefined, runStatusToolName: string): string {
+  const base = (raw ?? '').trim() || `CatsCo 远端 Agent 工具（${name}）`;
+  if (name === runStatusToolName) {
+    return `${base}。用法：run_id 传 catsco_<slug> 返回的 run_id，返回该 run 的状态与结果。`;
+  }
+  return `${base}。用法：input 传发给该 Agent 的输入（对象）；若上次返回 awaiting_input，请携带同一 session_id 再次调用以继续；返回文本中的 status 表示本次结果状态（completed=完成，awaiting_input=返问待补充，running=仍在运行）。`;
+}
+
+/** 把远端 inputSchema 收敛为本地 ToolParameter 形状（provider 会把该结构原样发给模型）。 */
+export function toToolParameters(schema: unknown): ToolDefinition['parameters'] {
+  const root = isRecord(schema) ? schema : {};
+  const rawProps = isRecord(root.properties) ? root.properties : {};
+  const properties: Record<string, ToolParameter> = {};
+  for (const [key, value] of Object.entries(rawProps)) {
+    const mapped = sanitizeParameter(value);
+    if (mapped) properties[key] = mapped;
+  }
+  const required = Array.isArray(root.required)
+    ? root.required.filter((item): item is string => typeof item === 'string')
+    : undefined;
+  return {
+    type: 'object',
+    properties,
+    ...(required && required.length > 0 ? { required } : {}),
+  };
+}
+
+function sanitizeParameter(raw: unknown): ToolParameter | null {
+  if (!isRecord(raw)) return null;
+  const out: ToolParameter = { type: typeof raw.type === 'string' ? raw.type : 'object' };
+  if (typeof raw.description === 'string' && raw.description.length > 0) out.description = raw.description;
+  if (Array.isArray(raw.enum)) {
+    const values = raw.enum.filter((item): item is string => typeof item === 'string');
+    if (values.length > 0) out.enum = values;
+  }
+  if (raw.default !== undefined) out.default = raw.default;
+  if (isRecord(raw.properties)) {
+    const nested: Record<string, ToolParameter> = {};
+    for (const [key, value] of Object.entries(raw.properties)) {
+      const mapped = sanitizeParameter(value);
+      if (mapped) nested[key] = mapped;
+    }
+    out.properties = nested;
+  }
+  if (raw.items !== undefined) {
+    const mapped = sanitizeParameter(raw.items);
+    if (mapped) out.items = mapped;
+  }
+  return out;
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toArgsRecord(args: unknown): Record<string, unknown> {
+  if (args === undefined || args === null) return {};
+  if (isRecord(args)) return args;
+  return { input: args };
+}
+
+/** 解析平台 envelope（structuredContent）；形状不符时返回 null。 */
+export function parseServiceRunEnvelope(structured: unknown): ServiceRunEnvelopeView | null {
+  if (!isRecord(structured)) return null;
+  const status = typeof structured.status === 'string' ? structured.status : undefined;
+  if (!status) return null;
+  const outputRaw = structured.output;
+  let output: ServiceRunEnvelopeView['output'] = null;
+  if (isRecord(outputRaw)) {
+    output = {};
+    if (typeof outputRaw.text === 'string') output.text = outputRaw.text;
+    if (typeof outputRaw.question === 'string') output.question = outputRaw.question;
+  }
+  return {
+    contract_version: typeof structured.contract_version === 'string' ? structured.contract_version : undefined,
+    status,
+    run_id: typeof structured.run_id === 'string' ? structured.run_id : undefined,
+    session_id: typeof structured.session_id === 'string' ? structured.session_id : undefined,
+    output,
+    files: Array.isArray(structured.files)
+      ? structured.files.filter((item): item is string => typeof item === 'string')
+      : undefined,
+    error: typeof structured.error === 'string' ? structured.error : undefined,
+  };
+}
+
+/** envelope → 模型可见的工具结果文本。 */
+export function formatEnvelopeResult(
+  envelope: ServiceRunEnvelopeView | null,
+  fallbackText: string,
+  toolName: string,
+): ToolExecutionResult {
+  const fallback = fallbackText.trim();
+  if (!envelope || !envelope.status) {
+    return { ok: true, content: fallback || '(空结果)' };
+  }
+  const status = envelope.status;
+  if (status === 'completed') {
+    const text = envelope.output?.text?.trim() || fallback || '(完成，但未返回文本结果)';
+    return { ok: true, content: withFiles(text, envelope.files) };
+  }
+  if (status === 'awaiting_input') {
+    const question = envelope.output?.question?.trim() || '（问题内容缺失——请用 catsco_run_status 复核 run）';
+    const sessionHint = envelope.session_id
+      ? `补充方式：携带同一 session_id（${envelope.session_id}）再次调用「${toolName}」。`
+      : `补充方式：以同一 session_id 再次调用「${toolName}」。`;
+    return { ok: true, content: `Agent 返问（需补充输入）：${question}\n\n${sessionHint}` };
+  }
+  if (status === 'running') {
+    const parts = [
+      'Agent 当前仍在运行，结果尚未就绪。',
+      envelope.run_id ? `run_id=${envelope.run_id}` : '',
+      envelope.session_id ? `session_id=${envelope.session_id}` : '',
+      `可稍后用 catsco_run_status（run_id）查询结果。`,
+    ].filter(Boolean);
+    return { ok: true, content: parts.join(' ') };
+  }
+  // failed / cancelled / 未知状态：以失败形式交给模型，message 里带远端信息。
+  const detail = envelope.output?.text?.trim() || envelope.error?.trim() || fallback;
+  return {
+    ok: false,
+    errorCode: status === 'cancelled' ? 'catsco_run_cancelled' : `catsco_run_${status}`,
+    message: detail || `远端 run 状态: ${status}`,
+  };
+}
+
+function withFiles(text: string, files: string[] | undefined): string {
+  if (!files || files.length === 0) return text;
+  const lines = files.map(file => `- ${file}`).join('\n');
+  return `${text}\n\n产物文件：\n${lines}`;
+}
+
+export function mapToolErrorMessage(code: string): string {
+  return TOOL_ERROR_MESSAGES[code] ?? `远端工具返回错误：${code}`;
+}
+
+function sameDefinition(left: ToolDefinition, right: ToolDefinition): boolean {
+  return (
+    left.name === right.name &&
+    left.description === right.description &&
+    JSON.stringify(left.parameters) === JSON.stringify(right.parameters)
+  );
+}

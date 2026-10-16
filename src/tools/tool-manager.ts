@@ -120,6 +120,13 @@ export class ToolManager implements ToolExecutor {
     this.tools.set(tool.definition.name, tool);
   }
 
+  /**
+   * 注销工具（用于动态注册的桥接工具下线；内置工具一般不会被注销）。
+   */
+  unregisterTool(name: string): void {
+    this.tools.delete(name);
+  }
+
   setContextDefaults(contextDefaults: Partial<ToolExecutionContext>): void {
     this.contextDefaults = {
       ...this.contextDefaults,

@@ -110,6 +110,11 @@ export interface AgentServices {
   };
   /** Device-bound CatsLog read capability used only by the memory branch. */
   catslogMemory?: CatsLogMemoryBackend;
+  /**
+   * CatsCo Agent 工具桥：把平台 MCP 端点上的远端定制 Agent 注入为本机工具。
+   * 可选：仅交互运行时装配；刷新为后台 fire-and-forget。
+   */
+  mcpToolBridge?: import('../mcp/mcp-tool-bridge').CatsCoMcpToolBridge;
   toolManager: ToolManager;
   skillManager: SkillManager;
   /** Optional so tests and embedded legacy runtimes keep their existing path. */
