@@ -271,6 +271,18 @@ export class CatsCoMcpToolBridge {
       }
       return formatEnvelopeResult(envelope, first.contentText, toolName);
     } catch (error: any) {
+      // 协议级 unknown tool（-32602）：平台在会话期间被撤订阅/工具下线的典型表现
+      // （服务端每请求重建工具面，旧工具面里的工具名会直接被拒）。这不是网络问题，
+      // 映射为可操作的「重新添加」指引，并触发后台刷新尽快同步本地工具面。
+      if (isUnknownToolError(error)) {
+        Logger.warning(`CatsCo MCP 调用失败：工具 ${toolName} 不在订阅清单（本地工具面将在下次同步移除）`);
+        this.refreshInBackground();
+        return {
+          ok: false,
+          errorCode: 'catsco_mcp_tool_unlisted',
+          message: '该 Agent 工具当前不在你的订阅清单中（可能在会话期间被取消订阅、更名或下线）。请到「Agent 工具」面板确认或重新添加后重试；本地工具面也会在后续同步中更新。',
+        };
+      }
       return {
         ok: false,
         errorCode: 'catsco_mcp_unreachable',
@@ -452,6 +464,16 @@ export function splitToolErrorText(text: string): { code: string; detail: string
   const match = /^([a-z][a-z0-9_]*)\s*:\s*([\s\S]+)$/.exec(trimmed);
   if (!match) return { code: trimmed, detail: '' };
   return { code: match[1], detail: match[2].trim() };
+}
+
+/**
+ * 判定「协议级 unknown tool」错误：SDK 将 JSON-RPC -32602 抛为 McpError，
+ * message 形如 `MCP error -32602: unknown tool "catsco_xxx"`；部分封装层只保留 code。
+ */
+function isUnknownToolError(error: any): boolean {
+  const message = String(error?.message ?? '');
+  if (/unknown tool/i.test(message)) return true;
+  return error?.code === -32602;
 }
 
 export function mapToolErrorMessage(code: string, detail = ''): string {
