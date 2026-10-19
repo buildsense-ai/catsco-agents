@@ -93,6 +93,24 @@ test('stripReasoningPreamble：中文输入 + 无标题返问——剥离开头�
   assert.match(out.text, /^这周都做了哪些事/);
 });
 
+test('stripReasoningPreamble：答案与推理粘在同一行（句级尾锚）', () => {
+  const leaked =
+    'The user provided a weekly report request. I should just ask the one focused question directly.' +
+    '这周你做了哪些事？把每天零散的记录贴过来就行，我整理成周报。';
+  const out = stripReasoningPreamble(leaked, { inputHasChinese: true });
+  assert.equal(out.stripped, true);
+  assert.match(out.text, /^这周你做了哪些事/);
+});
+
+test('stripReasoningPreamble：CoT 引用中文指令后仍能剥到问题本身', () => {
+  const leaked =
+    'According to the instructions, "返问场景同样只输出那一个问题本身，不要叙述判断过程". ' +
+    'So I should just ask the focused question.这周你做了哪些事？请补充。';
+  const out = stripReasoningPreamble(leaked, { inputHasChinese: true });
+  assert.equal(out.stripped, true);
+  assert.match(out.text, /^这周你做了哪些事/);
+});
+
 test('stripReasoningPreamble：英文输入不启无标题剥离', () => {
   const english = 'Here is your weekly report summary. Let me know if you need changes.';
   const out = stripReasoningPreamble(english, { inputHasChinese: false });
@@ -101,20 +119,19 @@ test('stripReasoningPreamble：英文输入不启无标题剥离', () => {
 });
 
 test('stripReasoningPreamble：中文输出本以中文开头不误剪', () => {
-  const clean = 'SQL 优化建议如下：\n- 为慢查询加索引';
+  const clean = 'SQL 优化建议如下：为慢查询加索引，并复核执行计划。';
   const out = stripReasoningPreamble(clean, { inputHasChinese: true });
   assert.equal(out.stripped, false);
 });
 
-test('stripReasoningPreamble：前置英文量不足（正当短撒娇）不剥离', () => {
-  const legit = 'OK\n\n已按你的要求完成交付。';
+test('stripReasoningPreamble：头部英文量不足（正当短呼）不剥离', () => {
+  const legit = 'OK。已按你的要求完成交付。';
   const out = stripReasoningPreamble(legit, { inputHasChinese: true });
   assert.equal(out.stripped, false);
 });
 
-test('stripReasoningPreamble：CoT 引用大量中文（超阈值）则不冒险剥离', () => {
-  const risky =
-    'The user mentioned 「磐石-1」导出崩溃、「磐石-2」缓存优化、「磐石-3」对账联调、「磐石-4」慢查询告警、「磐石-5」消息队列治理、「磐石-6」灰度方案等多个事项，需要我逐一分析处理方式并给出建议。\n\n这周做了什么？请补充。';
-  const out = stripReasoningPreamble(risky, { inputHasChinese: true });
+test('stripReasoningPreamble：中英混合正当回复（英文头短）不剥离', () => {
+  const legit = 'SQL fix applied. 已修复登录问题。详情：加了参数化查询。';
+  const out = stripReasoningPreamble(legit, { inputHasChinese: true });
   assert.equal(out.stripped, false);
 });

@@ -91,36 +91,38 @@ export function stripReasoningPreamble(
   }
   // 二：无标题（返问/短回复）：中文输入时剥离开头的英文推理块（模型/relay 把思考当正文的形态二）。
   if (opts.inputHasChinese && headingIdx <= 0) {
-    const kept = stripLeadingEnglishBlock(trimmed);
+    const kept = stripEnglishPreambleBeforeChineseTail(trimmed);
     if (kept !== null) return { text: kept, stripped: true };
   }
   return { text, stripped: false };
 }
 
-/** 找首个"中文为主"行；若其前面的块是英文主导（CoT 特征），剥到该行为止。 */
-function stripLeadingEnglishBlock(text: string): string | null {
-  const lines = text.split('\n');
-  let asciiBefore = 0;
-  let cjkBefore = 0;
-  let stripAt = -1;
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    const ascii = (line.match(/[A-Za-z]/g) ?? []).length;
-    const cjk = (line.match(/[\u4e00-\u9fff]/g) ?? []).length;
-    if (cjk > ascii && cjk >= 4) {
-      stripAt = i;
+/**
+ * 句级尾锚：从结尾回扫"中文为主"的句子作为答案尾部，剥掉其前的英文正文。
+ * 比行级锚更稳健：CoT 常引用中文指令/少量术语，且答案与推理可能粘在同一行
+ * （真机例："…ask the question directly.这周你做了哪些事？…"）。
+ * 安全性：仅当头部有 ≥40 个英文字母、尾部以中文为主（ascii 占比 ≤ 1/3）时动手。
+ */
+function stripEnglishPreambleBeforeChineseTail(text: string): string | null {
+  const parts = text.split(/(?<=[.!?。！？])\s*/).filter(p => p.trim() !== '');
+  if (parts.length < 2) return null;
+  let cut = -1;
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const cjk = (parts[i].match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g) ?? []).length;
+    const ascii = (parts[i].match(/[A-Za-z]/g) ?? []).length;
+    if (cjk >= 4 && cjk >= ascii) {
+      cut = i;
+    } else {
       break;
     }
-    asciiBefore += ascii;
-    cjkBefore += cjk;
   }
-  if (stripAt <= 0) return null;
-  // 前置块必须：英文量足够（≥40 字母）、中文极少（≤15 字，容忍引用少量中文 token）
-  if (asciiBefore < 40 || cjkBefore > 15) return null;
-  const firstMeaningful = lines.find(line => line.trim() !== '') ?? '';
-  if (!/^[A-Za-z]/.test(firstMeaningful.trim())) return null;
-  const kept = lines.slice(stripAt).join('\n').trim();
-  return kept || null;
+  if (cut <= 0) return null;
+  const preamble = parts.slice(0, cut).join('');
+  const tail = parts.slice(cut).join('').trim();
+  if ((preamble.match(/[A-Za-z]/g) ?? []).length < 40) return null;
+  const tailAscii = (tail.match(/[A-Za-z]/g) ?? []).length;
+  if (tailAscii > tail.length / 3) return null;
+  return tail || null;
 }
 
 function looksLikeReasoningPreamble(preamble: string): boolean {
