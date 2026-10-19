@@ -137,9 +137,21 @@ export function buildCodexInvocation(
     if (!opts.threadId) {
       throw new Error('resume invocation requires threadId');
     }
+    // resume 子命令不接受 --sandbox/-C：沙箱用 -c 覆盖（默认 read-only 会拒绝写入）；
+    // 工作目录由 spawn cwd 决定（也是 resume 会话发现的过滤条件）。
+    const sandbox = opts.sandbox ?? 'workspace-write';
     return {
       command: env.command,
-      args: ['exec', 'resume', ...common, ...(opts.extraArgs ?? []), opts.threadId, opts.prompt],
+      args: [
+        'exec',
+        'resume',
+        ...common,
+        '-c',
+        `sandbox_mode=${sandbox}`,
+        ...(opts.extraArgs ?? []),
+        opts.threadId,
+        opts.prompt,
+      ],
     };
   }
   const sandbox = opts.sandbox ?? 'workspace-write';
@@ -403,7 +415,8 @@ export async function runCodexClaimedRun(
       mode,
       prompt,
       ...(threadId ? { threadId } : {}),
-      ...(mode === 'exec' ? { model, sandbox } : {}),
+      sandbox,
+      ...(mode === 'exec' ? { model } : {}),
       ...(extraArgs.length > 0 ? { extraArgs } : {}),
     });
     return runCodex({
