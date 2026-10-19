@@ -27,6 +27,8 @@ export interface RunClaimedRunOptions {
   progressThrottleMs?: number;
   /** 本地缓存（可选；权威快照在平台侧）。 */
   checkpointCache?: CheckpointCache;
+  /** codex 执行后端配置（仅 runner.type=codex 的包需要）。 */
+  codex?: import('./codex-runner').CodexExecEnv;
   /** 成功收尾（completed 或 awaiting_input）的计量回调（daemon 汇总指标用）。 */
   onCompleted?: (info: {
     usage: { promptTokens: number; completionTokens: number };
@@ -68,6 +70,11 @@ export async function runClaimedRun(
   platform: PlatformClient,
   opts: RunClaimedRunOptions = {},
 ): Promise<RunOutcome> {
+  // 执行后端分流：声明 runner.type=codex 的包交本机 codex CLI（自含模型/工具循环）。
+  if (pkg.runner?.type === 'codex') {
+    const { runCodexClaimedRun } = await import('./codex-runner');
+    return runCodexClaimedRun(run, pkg, platform, opts);
+  }
   const throttleMs = opts.progressThrottleMs ?? 500;
   const previous = parseCheckpointSnapshot(run.checkpoint?.snapshot) ?? undefined;
   const completedHistory: ServiceChatMessage[] = [...(previous?.history ?? [])];

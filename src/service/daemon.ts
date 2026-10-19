@@ -144,6 +144,13 @@ export class ServiceDaemon {
       const outcome = await runClaimedRun(run, pkg, this.deps.model, this.deps.platform, {
         signal: controller.signal,
         checkpointCache: this.deps.checkpointCache,
+        codex: {
+          command: this.deps.config.codexCommand,
+          homeDir: this.deps.config.codexHomeDir,
+          workspaceRoot: this.deps.config.codexWorkspaceRoot,
+          sandbox: this.deps.config.codexSandbox,
+          ...(this.deps.config.codexProxy ? { proxy: this.deps.config.codexProxy } : {}),
+        },
         onCompleted: (info) => {
           const tokens = info.usage.promptTokens + info.usage.completionTokens;
           this.metrics.record('completed', Date.now() - startedAt, tokens, info.resumed);

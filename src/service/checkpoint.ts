@@ -12,15 +12,23 @@ export interface ServiceCheckpoint {
   v: 1;
   revision: number;
   history: ServiceChatMessage[];
+  /** codex 执行后端的会话线程 id（仅 codex 包写入；其它执行器忽略）。 */
+  codex?: { threadId: string };
 }
 
-/** 纯函数：基于上一版快照构建下一版（revision 单调递增）。 */
+/** 纯函数：基于上一版快照构建下一版（revision 单调递增）；可选携带 codex 线程 id。 */
 export function buildNextCheckpoint(
   previous: ServiceCheckpoint | undefined | null,
   history: ServiceChatMessage[],
+  codex?: { threadId?: string } | null,
 ): ServiceCheckpoint {
   const base = previous?.revision ?? 0;
-  return { v: 1, revision: Math.max(0, base) + 1, history };
+  const checkpoint: ServiceCheckpoint = { v: 1, revision: Math.max(0, base) + 1, history };
+  const threadId = (codex?.threadId ?? previous?.codex?.threadId ?? '').trim();
+  if (threadId) {
+    checkpoint.codex = { threadId };
+  }
+  return checkpoint;
 }
 
 /** 纯函数：解析平台下发的 checkpoint snapshot（宽容：坏形状按 null 处理）。 */
@@ -28,7 +36,7 @@ export function parseCheckpointSnapshot(snapshot: unknown): ServiceCheckpoint | 
   if (!snapshot || typeof snapshot !== 'object') {
     return null;
   }
-  const raw = snapshot as { v?: unknown; revision?: unknown; history?: unknown };
+  const raw = snapshot as { v?: unknown; revision?: unknown; history?: unknown; codex?: unknown };
   if (!Array.isArray(raw.history)) {
     return null;
   }
@@ -42,11 +50,18 @@ export function parseCheckpointSnapshot(snapshot: unknown): ServiceCheckpoint | 
       history.push({ role: msg.role, content: msg.content });
     }
   }
-  return {
+  const checkpoint: ServiceCheckpoint = {
     v: 1,
     revision: Number.isFinite(raw.revision) ? (raw.revision as number) : 0,
     history,
   };
+  if (raw.codex && typeof raw.codex === 'object') {
+    const threadId = (raw.codex as { threadId?: unknown }).threadId;
+    if (typeof threadId === 'string' && threadId.trim()) {
+      checkpoint.codex = { threadId: threadId.trim() };
+    }
+  }
+  return checkpoint;
 }
 
 /**

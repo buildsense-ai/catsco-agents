@@ -53,6 +53,56 @@ test('loads knowledge files with sha256 verification', async () => {
   assert.ok(faq.content.includes('专业版'), 'knowledge content loaded');
 });
 
+test('runner 字段：缺省 undefined，codex 正常解析（model/sandbox/extra_args）', async () => {
+  const plain = await loadAgentPackage(fixturesDir, 'mini');
+  assert.equal(plain.runner, undefined);
+
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-runner-'));
+  const dir = path.join(tmp, 'cx');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, 'system-prompt.md'), 'sp');
+  await fs.writeFile(
+    path.join(dir, 'agent.json'),
+    JSON.stringify({
+      schema: 'catsco.service-agent.v1',
+      slug: 'cx',
+      prompt: { system: 'system-prompt.md' },
+      model: { primary: { provider: 'openai', model: 'gpt-x' } },
+      runner: { type: 'codex', model: 'gpt-5.6-sol', sandbox: 'workspace-write', extra_args: ['--foo', 1] },
+    }),
+  );
+  const pkg = await loadAgentPackage(tmp, 'cx');
+  assert.deepEqual(pkg.runner, {
+    type: 'codex',
+    model: 'gpt-5.6-sol',
+    sandbox: 'workspace-write',
+    extraArgs: ['--foo'],
+  });
+});
+
+test('runner 字段：未知 type / 非法 sandbox 直接报错（不静默降级）', async () => {
+  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-runner-bad-'));
+  const write = async (slug: string, runner: unknown): Promise<void> => {
+    const dir = path.join(tmp, slug);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'system-prompt.md'), 'sp');
+    await fs.writeFile(
+      path.join(dir, 'agent.json'),
+      JSON.stringify({
+        schema: 'catsco.service-agent.v1',
+        slug,
+        prompt: { system: 'system-prompt.md' },
+        model: { primary: { provider: 'openai', model: 'gpt-x' } },
+        runner,
+      }),
+    );
+  };
+  await write('badtype', { type: 'python' });
+  await assert.rejects(loadAgentPackage(tmp, 'badtype'), /runner\.type/);
+  await write('badsandbox', { type: 'codex', sandbox: 'danger-full-access' });
+  await assert.rejects(loadAgentPackage(tmp, 'badsandbox'), /runner\.sandbox/);
+});
+
 test('rejects knowledge with tampered sha256 or missing file', async () => {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pkg-knowledge-'));
   const dir = path.join(tmp, 'kb');

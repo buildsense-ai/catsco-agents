@@ -14,6 +14,16 @@ export interface ServiceConfig {
   pollIntervalMs: number;
   heartbeatMs: number;
   shutdownGraceMs: number;
+  /** codex 执行后端：命令（默认 codex，可指绝对路径）。 */
+  codexCommand: string;
+  /** codex 执行后端：CODEX_HOME（认证/配置/会话存储）。 */
+  codexHomeDir: string;
+  /** codex 执行后端：每会话工作区根目录。 */
+  codexWorkspaceRoot: string;
+  /** codex 执行后端：出口代理（空=不注入；生产为本地 ssh 隧道地址）。 */
+  codexProxy: string;
+  /** codex 执行后端：默认沙箱档位。 */
+  codexSandbox: 'read-only' | 'workspace-write';
 }
 
 const DEFAULTS = {
@@ -22,6 +32,9 @@ const DEFAULTS = {
   pollIntervalMs: 2000,
   heartbeatMs: 10000,
   shutdownGraceMs: 30000,
+  codexCommand: 'codex',
+  codexHomeDir: '/opt/catsco-agents/env/codex-home',
+  codexWorkspaceRoot: '/opt/catsco-agents/workspaces',
 } as const;
 
 function clampInt(raw: string | undefined, fallback: number, min: number, max: number): number {
@@ -66,5 +79,10 @@ export function loadServiceConfig(env: Record<string, string | undefined>): Serv
     pollIntervalMs: clampInt(env.CATS_SERVICE_POLL_INTERVAL_MS, DEFAULTS.pollIntervalMs, 250, 30000),
     heartbeatMs: clampInt(env.CATS_SERVICE_HEARTBEAT_MS, DEFAULTS.heartbeatMs, 1000, 60000),
     shutdownGraceMs: clampInt(env.CATS_SERVICE_SHUTDOWN_GRACE_MS, DEFAULTS.shutdownGraceMs, 0, 120000),
+    codexCommand: (env.CATS_CODEX_COMMAND ?? '').trim() || DEFAULTS.codexCommand,
+    codexHomeDir: (env.CATS_CODEX_HOME ?? '').trim() || DEFAULTS.codexHomeDir,
+    codexWorkspaceRoot: (env.CATS_CODEX_WORKSPACE_ROOT ?? '').trim() || DEFAULTS.codexWorkspaceRoot,
+    codexProxy: (env.CATS_CODEX_PROXY ?? '').trim(),
+    codexSandbox: (env.CATS_CODEX_SANDBOX ?? '').trim() === 'read-only' ? 'read-only' : 'workspace-write',
   };
 }
