@@ -38,6 +38,7 @@ import {
   SessionCallbacks,
 } from '../core/agent-session';
 import { Logger } from '../utils/logger';
+import type { RunReceiptDecision } from '../mcp/run-receipts';
 import { SubAgentManager } from '../core/sub-agent-manager';
 import { shouldSuppressSubAgentObservationReply } from '../core/sub-agent-observation';
 import type { SubAgentInfo } from '../core/sub-agent-session';
@@ -783,6 +784,13 @@ export class CatsCompanyBot {
 
     this.bot.on('group_disbanded', (payload: { topic?: string }) => {
       this.handleGroupDisbandedNotice(payload);
+    });
+
+    this.bot.on('service_run_receipt', (raw: unknown) => {
+      // 定制应用 run 生命周期回执（设计 §19）：长任务终态的"叫醒"信号。
+      // 同步入口只做路由判定，唤醒回合在内部纳入 runTrackedConversationWork。
+      if (this.shuttingDown) return;
+      this.handleServiceRunReceipt(raw);
     });
 
     this.bot.on('device_rpc_request', async (request: CatsDeviceRpcMessage) => {
@@ -2647,6 +2655,83 @@ export class CatsCompanyBot {
       if (!this.shuttingDown) {
         this.clearInterruptedTurn(sessionKey);
       }
+      stopTypingHeartbeat();
+    }
+  }
+
+  /**
+   * 定制应用 run 生命周期回执（设计 §19）：去重 → 匹配待补登记 → 唤醒回合。
+   * 回执只是"叫醒"信号，内容一律以 catsco_run_status 拉取为准。
+   */
+  private handleServiceRunReceipt(raw: unknown): void {
+    const router = this.runtime?.services?.serviceRunReceiptRouter;
+    if (!router) return;
+    let decision: RunReceiptDecision;
+    try {
+      decision = router.handle(raw);
+    } catch (error: any) {
+      Logger.warning(`[service_run_receipt] 路由失败: ${error?.message || error}`);
+      return;
+    }
+    if (decision.action === 'ignored') {
+      if (decision.reason !== 'duplicate') {
+        Logger.info(`[service_run_receipt] ignored: ${decision.reason}`);
+      }
+      return;
+    }
+    Logger.info(
+      `[service_run_receipt] wake run=${decision.receipt.run_id} status=${decision.receipt.status} `
+      + `tool=${decision.pending.toolName} topic=${decision.pending.conversationTopic}`,
+    );
+    void this.runServiceRunReceiptWake(decision).catch((error: any) => {
+      Logger.warning(`[service_run_receipt] 唤醒回合失败: ${error?.message || error}`);
+    });
+  }
+
+  private async runServiceRunReceiptWake(
+    decision: Extract<RunReceiptDecision, { action: 'wake' }>,
+  ): Promise<void> {
+    if (this.shuttingDown || !this.connectorReady) return;
+    const sessionKey = decision.pending.conversationSessionKey as string;
+    const topic = decision.pending.conversationTopic as string;
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    if (!this.tryReserveSessionExecution(sessionKey, session)) {
+      // 会话正忙（用户还有一轮在跑）：不插入并发回合，放弃唤醒；
+      // 结果仍可通过用户追问或模型补查 catsco_run_status 取回。
+      Logger.info(`[service_run_receipt] ${sessionKey} 会话正忙，跳过唤醒`);
+      return;
+    }
+    try {
+      await this.runTrackedConversationWork(() =>
+        this.runServiceRunReceiptTurn(sessionKey, topic, decision.note));
+    } finally {
+      this.releaseSessionExecution(sessionKey);
+      try {
+        await this.drainMessageQueue(sessionKey);
+      } catch (error: any) {
+        Logger.warning(`[service_run_receipt] ${sessionKey} 唤醒后排空消息队列失败: ${error?.message || error}`);
+      }
+    }
+  }
+
+  private async runServiceRunReceiptTurn(sessionKey: string, topic: string, note: string): Promise<void> {
+    const session = this.sessionManager.getOrCreate(sessionKey);
+    const stopTypingHeartbeat = this.startTypingHeartbeat(topic);
+    try {
+      const result = await session.handleRuntimeObservation(note, {
+        channel: this.buildChannel(topic, { sessionKey }),
+        callbacks: this.buildSessionCallbacks(topic, { sessionKey }),
+        source: 'service_run_receipt',
+      });
+      if (this.shuttingDown) return;
+      if (result.visibleToUser && result.text) {
+        await this.sender.reply(topic, result.text).catch((error: any) => {
+          Logger.warning(`[service_run_receipt] ${sessionKey} 回复发送失败: ${error?.message || error}`);
+        });
+      }
+    } catch (error: any) {
+      Logger.warning(`[service_run_receipt] ${sessionKey} 唤醒回合失败: ${error?.message || error}`);
+    } finally {
       stopTypingHeartbeat();
     }
   }
