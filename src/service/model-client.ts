@@ -74,15 +74,53 @@ export function extractUsage(
  * - 无标题、标题已在开头、序言不像推理（如正当的双语铺垫）→ 原样返回。
  * 依据：本平台全部 service agent 的输出规范均要求以 # / ## 标题开头。
  */
-export function stripReasoningPreamble(text: string): { text: string; stripped: boolean } {
+export function stripReasoningPreamble(
+  text: string,
+  opts: { inputHasChinese?: boolean } = {},
+): { text: string; stripped: boolean } {
   const trimmed = text.trim();
   if (!trimmed) return { text, stripped: false };
   const lines = trimmed.split('\n');
   const headingIdx = lines.findIndex(line => /^#{1,6}\s/.test(line.trim()));
-  if (headingIdx <= 0) return { text, stripped: false };
-  const preamble = lines.slice(0, headingIdx).join('\n').trim();
-  if (!preamble || !looksLikeReasoningPreamble(preamble)) return { text, stripped: false };
-  return { text: lines.slice(headingIdx).join('\n').trim(), stripped: true };
+  if (headingIdx > 0) {
+    const preamble = lines.slice(0, headingIdx).join('\n').trim();
+    if (preamble && looksLikeReasoningPreamble(preamble)) {
+      return { text: lines.slice(headingIdx).join('\n').trim(), stripped: true };
+    }
+    if (!preamble) return { text, stripped: false };
+  }
+  // 二：无标题（返问/短回复）：中文输入时剥离开头的英文推理块（模型/relay 把思考当正文的形态二）。
+  if (opts.inputHasChinese && headingIdx <= 0) {
+    const kept = stripLeadingEnglishBlock(trimmed);
+    if (kept !== null) return { text: kept, stripped: true };
+  }
+  return { text, stripped: false };
+}
+
+/** 找首个"中文为主"行；若其前面的块是英文主导（CoT 特征），剥到该行为止。 */
+function stripLeadingEnglishBlock(text: string): string | null {
+  const lines = text.split('\n');
+  let asciiBefore = 0;
+  let cjkBefore = 0;
+  let stripAt = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    const ascii = (line.match(/[A-Za-z]/g) ?? []).length;
+    const cjk = (line.match(/[\u4e00-\u9fff]/g) ?? []).length;
+    if (cjk > ascii && cjk >= 4) {
+      stripAt = i;
+      break;
+    }
+    asciiBefore += ascii;
+    cjkBefore += cjk;
+  }
+  if (stripAt <= 0) return null;
+  // 前置块必须：英文量足够（≥40 字母）、中文极少（≤15 字，容忍引用少量中文 token）
+  if (asciiBefore < 40 || cjkBefore > 15) return null;
+  const firstMeaningful = lines.find(line => line.trim() !== '') ?? '';
+  if (!/^[A-Za-z]/.test(firstMeaningful.trim())) return null;
+  const kept = lines.slice(stripAt).join('\n').trim();
+  return kept || null;
 }
 
 function looksLikeReasoningPreamble(preamble: string): boolean {
@@ -124,7 +162,17 @@ export class RelayModelClient implements ModelClient {
       req.signal ? { signal: req.signal } : undefined,
     );
     const rawText = (streamed || response?.content || '').trim();
-    const sanitized = stripReasoningPreamble(rawText);
+    const lastUser = [...req.messages].reverse().find(m => m.role === 'user');
+    const lastUserText = typeof lastUser?.content === 'string'
+      ? lastUser.content
+      : Array.isArray(lastUser?.content)
+        ? lastUser.content
+            .map(block => (block && typeof block === 'object' && 'text' in block ? String((block as { text?: unknown }).text ?? '') : ''))
+            .join(' ')
+        : '';
+    const sanitized = stripReasoningPreamble(rawText, {
+      inputHasChinese: /[\u4e00-\u9fff]/.test(lastUserText),
+    });
     if (sanitized.stripped) {
       console.warn(`[service] stripped reasoning preamble from model output (${rawText.length - sanitized.text.length} chars)`);
     }
