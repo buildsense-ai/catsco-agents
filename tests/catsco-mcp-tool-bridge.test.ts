@@ -304,6 +304,40 @@ describe('CatsCo MCP 工具桥', () => {
     assert.match(failure.message, /请稍后再试/);
   });
 
+  test('协议级 unknown tool（-32602，工具被撤订阅/下线）：映射为可操作的重新添加指引，而非"无法连接"', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => {
+        const error = Object.assign(new Error('MCP error -32602: unknown tool "catsco_hello"'), { code: -32602 });
+        throw error;
+      },
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    assert.equal(result.ok, false);
+    const failure = result as { errorCode: string; message: string };
+    assert.equal(failure.errorCode, 'catsco_mcp_tool_unlisted');
+    assert.match(failure.message, /订阅清单/);
+    assert.match(failure.message, /重新添加/);
+    assert.doesNotMatch(failure.message, /无法连接/);
+  });
+
+  test('协议级 unknown tool（仅 message 无 code）：同样映射为重新添加指引', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => {
+        throw new Error('MCP error -32602: unknown tool "catsco_hello"');
+      },
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    assert.equal(result.ok, false);
+    const failure = result as { errorCode: string; message: string };
+    assert.equal(failure.errorCode, 'catsco_mcp_tool_unlisted');
+  });
+
   test('failed 状态映射为 ok:false，携带 error 明细', async () => {
     const { bridge, manager } = createHarness({
       listTools: () => [toolInfo('catsco_hello')],
