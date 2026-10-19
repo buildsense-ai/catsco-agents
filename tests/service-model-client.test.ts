@@ -82,3 +82,39 @@ test('stripReasoningPreamble：序言为双语混合仍能识别推理特征', (
   assert.equal(out.stripped, true);
   assert.match(out.text, /^# 周报/);
 });
+
+test('stripReasoningPreamble：中文输入 + 无标题返问——剥离开头英文 CoT 块', () => {
+  const leaked =
+    'The user\'s input is just "帮我写个周报。" (Help me write a weekly report); I need to ask one focused question.\n' +
+    '\n' +
+    '这周都做了哪些事？请列一下即可。';
+  const out = stripReasoningPreamble(leaked, { inputHasChinese: true });
+  assert.equal(out.stripped, true);
+  assert.match(out.text, /^这周都做了哪些事/);
+});
+
+test('stripReasoningPreamble：英文输入不启无标题剥离', () => {
+  const english = 'Here is your weekly report summary. Let me know if you need changes.';
+  const out = stripReasoningPreamble(english, { inputHasChinese: false });
+  assert.equal(out.stripped, false);
+  assert.equal(out.text, english);
+});
+
+test('stripReasoningPreamble：中文输出本以中文开头不误剪', () => {
+  const clean = 'SQL 优化建议如下：\n- 为慢查询加索引';
+  const out = stripReasoningPreamble(clean, { inputHasChinese: true });
+  assert.equal(out.stripped, false);
+});
+
+test('stripReasoningPreamble：前置英文量不足（正当短撒娇）不剥离', () => {
+  const legit = 'OK\n\n已按你的要求完成交付。';
+  const out = stripReasoningPreamble(legit, { inputHasChinese: true });
+  assert.equal(out.stripped, false);
+});
+
+test('stripReasoningPreamble：CoT 引用大量中文（超阈值）则不冒险剥离', () => {
+  const risky =
+    'The user mentioned 「磐石-1」导出崩溃、「磐石-2」缓存优化、「磐石-3」对账联调、「磐石-4」慢查询告警、「磐石-5」消息队列治理、「磐石-6」灰度方案等多个事项，需要我逐一分析处理方式并给出建议。\n\n这周做了什么？请补充。';
+  const out = stripReasoningPreamble(risky, { inputHasChinese: true });
+  assert.equal(out.stripped, false);
+});
