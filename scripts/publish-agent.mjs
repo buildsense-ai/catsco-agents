@@ -190,7 +190,7 @@ async function main() {
       console.error(result.stderr.trim() || `ssh exit ${result.code}`);
       process.exit(1);
     }
-    console.log(result.stdout.trim());
+    verifyPublishResponse(result.stdout.trim(), { slug, hash });
     return;
   }
 
@@ -209,7 +209,31 @@ async function main() {
     console.error(`publish failed: HTTP ${response.status} ${text.slice(0, 400)}`);
     process.exit(1);
   }
-  console.log(text);
+  verifyPublishResponse(text, { slug, hash });
+}
+
+/**
+ * 校验平台发布响应：必须是合法 JSON、无 error、package_hash 与本地一致。
+ * 背景：ssh 路径的 curl 不带 -f，HTTP 4xx/5xx 仍退出 0；不校验会让 CI「假绿」。
+ */
+function verifyPublishResponse(raw, { slug, hash }) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.error(`publish response is not valid JSON:\n${raw.slice(0, 400)}`);
+    process.exit(1);
+  }
+  if (parsed.error) {
+    console.error(`publish rejected by platform: ${String(parsed.error).slice(0, 300)}`);
+    process.exit(1);
+  }
+  const remoteHash = String(parsed.package_hash || '');
+  if (remoteHash.toLowerCase() !== hash.toLowerCase()) {
+    console.error(`publish hash mismatch: platform=${remoteHash || '(missing)'} local=${hash}`);
+    process.exit(1);
+  }
+  console.log(`publish verified: slug=${parsed.slug || slug} version=${parsed.version ?? '-'} package_hash=${remoteHash}`);
 }
 
 /** 从平台拉取指定 hash 的包原文（ssh 模式经跳板机；直连模式用实例 token）。 */
