@@ -85,6 +85,8 @@ const DEFAULT_RUN_POLL_INTERVAL_MS = 5_000;
 const TOOL_ERROR_MESSAGES: Record<string, string> = {
   unauthorized: 'CatsCo 登录态无效或已过期，请在 CatsCo 面板重新登录后重试。',
   subscription_required: '当前账号尚未添加该 Agent 工具，请先在「Agent 工具」面板添加后重试。',
+  agent_not_subscribed: '该 Agent 已从当前账号清单中移除，请先在「Agent 工具」面板重新添加后再调用。',
+  session_busy: '该会话已有进行中的运行：请等待其完成，或先用「catsco_run_status」查询进度；若是新任务，请不带 session_id 重新调用。',
   run_id_required: '缺少 run_id 参数。',
   run_not_found: '未找到该 run（可能已过期，或不属于当前账号）。',
 };
@@ -258,8 +260,10 @@ export class CatsCoMcpToolBridge {
     try {
       const first = await client.callTool(toolName, args);
       if (first.isError) {
-        const code = first.contentText.trim() || 'catsco_mcp_tool_error';
-        return { ok: false, errorCode: code, message: mapToolErrorMessage(code) };
+        // 服务端 isError 文本有两种形态：裸码（如 unauthorized）或「码: 说明」
+        // （如 session_busy: …）。拆出裸码做程序化匹配，说明文本兜底展示。
+        const { code, detail } = splitToolErrorText(first.contentText);
+        return { ok: false, errorCode: code, message: mapToolErrorMessage(code, detail) };
       }
       let envelope = parseServiceRunEnvelope(first.structured);
       if (toolName !== this.runStatusToolName && this.runPollTimeoutMs > 0) {
@@ -442,8 +446,18 @@ function withFiles(text: string, files: string[] | undefined): string {
   return `${text}\n\n产物文件：\n${lines}`;
 }
 
-export function mapToolErrorMessage(code: string): string {
-  return TOOL_ERROR_MESSAGES[code] ?? `远端工具返回错误：${code}`;
+export function splitToolErrorText(text: string): { code: string; detail: string } {
+  const trimmed = text.trim();
+  if (!trimmed) return { code: 'catsco_mcp_tool_error', detail: '' };
+  const match = /^([a-z][a-z0-9_]*)\s*:\s*([\s\S]+)$/.exec(trimmed);
+  if (!match) return { code: trimmed, detail: '' };
+  return { code: match[1], detail: match[2].trim() };
+}
+
+export function mapToolErrorMessage(code: string, detail = ''): string {
+  const mapped = TOOL_ERROR_MESSAGES[code];
+  if (mapped) return mapped;
+  return detail ? `远端 Agent 返回错误（${code}）：${detail}` : `远端工具返回错误：${code}`;
 }
 
 function sameDefinition(left: ToolDefinition, right: ToolDefinition): boolean {
