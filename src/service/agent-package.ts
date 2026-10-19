@@ -52,8 +52,19 @@ export interface AgentPackage {
     /** 允许模型经 ask_user 工具发起回合制返问（设计 §3.3-8；默认关闭）。 */
     allowAskUser: boolean;
   };
+  /** 执行后端：缺省=平台模型文本执行；type=codex 时交本机官方 codex CLI 执行。 */
+  runner?: CodexRunnerConfig;
   skills: LoadedSkill[];
   knowledge: { files: LoadedKnowledge[] };
+}
+
+/** codex 执行后端配置（runner.type=codex）。沙箱默认 workspace-write（服务侧安全基线）。 */
+export interface CodexRunnerConfig {
+  type: 'codex';
+  /** 覆盖模型（缺省用 manifest.model.primary.model）。 */
+  model?: string;
+  sandbox?: 'read-only' | 'workspace-write';
+  extraArgs?: string[];
 }
 
 /** 知识全量注入的上限（防炸上下文；超出报错，促使用技能/拆分）。 */
@@ -69,8 +80,34 @@ interface AgentManifest {
   prompt?: { system?: string };
   model?: { primary?: Partial<ModelBinding>; fallbacks?: Partial<ModelBinding>[] };
   behavior?: { async_threshold_seconds?: number; max_run_seconds?: number; allow_ask_user?: boolean };
+  runner?: { type?: unknown; model?: unknown; sandbox?: unknown; extra_args?: unknown };
   skills?: SkillRef[];
   knowledge?: { files?: KnowledgeFileRef[] };
+}
+
+/** 解析 manifest.runner（缺失=undefined；未知 type/非法 sandbox 直接报错，不静默降级）。 */
+function parseRunnerConfig(slug: string, raw: AgentManifest['runner']): CodexRunnerConfig | undefined {
+  if (raw === undefined) return undefined;
+  const type = typeof raw.type === 'string' ? raw.type.trim() : '';
+  if (type !== 'codex') {
+    throw new Error(`agent package ${slug}: runner.type must be "codex" (got "${type || '(missing)'}")`);
+  }
+  const config: CodexRunnerConfig = { type: 'codex' };
+  if (typeof raw.model === 'string' && raw.model.trim()) {
+    config.model = raw.model.trim();
+  }
+  if (typeof raw.sandbox === 'string' && raw.sandbox.trim()) {
+    const sandbox = raw.sandbox.trim();
+    if (sandbox !== 'read-only' && sandbox !== 'workspace-write') {
+      throw new Error(`agent package ${slug}: runner.sandbox invalid (${sandbox})`);
+    }
+    config.sandbox = sandbox;
+  }
+  if (Array.isArray(raw.extra_args)) {
+    const extra = raw.extra_args.filter((item): item is string => typeof item === 'string');
+    if (extra.length > 0) config.extraArgs = extra;
+  }
+  return config;
 }
 
 function normalizeBinding(raw: Partial<ModelBinding> | undefined): ModelBinding {
@@ -162,6 +199,7 @@ export async function loadAgentPackage(agentsDir: string, slug: string): Promise
   }
   const asyncThreshold = manifest.behavior?.async_threshold_seconds;
   const maxRun = manifest.behavior?.max_run_seconds;
+  const runner = parseRunnerConfig(slug, manifest.runner);
   const skills = await loadSkills(slug, packageDir, manifest.skills ?? []);
   const knowledge = await loadKnowledge(slug, packageDir, manifest.knowledge?.files ?? []);
   return {
@@ -174,6 +212,7 @@ export async function loadAgentPackage(agentsDir: string, slug: string): Promise
       maxRunSeconds: Number.isFinite(maxRun) ? (maxRun as number) : 600,
       allowAskUser: manifest.behavior?.allow_ask_user === true,
     },
+    ...(runner ? { runner } : {}),
     skills,
     knowledge: { files: knowledge },
   };

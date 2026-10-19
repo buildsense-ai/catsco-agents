@@ -42,7 +42,7 @@ jobs:
       # 的问题（e2e 后 child/esbuild 句柄；影响：CI 步超时。深挖列为 TODO）。
       - name: Service runtime tests (unit)
         timeout-minutes: 5
-        run: npx tsx --test --test-timeout=60000 --test-force-exit tests/service-config.test.ts tests/service-agent-package.test.ts tests/service-platform-client.test.ts tests/service-model-client.test.ts tests/service-session-runner.test.ts tests/service-daemon.test.ts
+        run: npx tsx --test --test-timeout=60000 --test-force-exit tests/service-config.test.ts tests/service-agent-package.test.ts tests/service-platform-client.test.ts tests/service-model-client.test.ts tests/service-session-runner.test.ts tests/service-daemon.test.ts tests/run-receipts.test.ts tests/codex-runner.test.ts
       - name: Service runtime tests (e2e)
         timeout-minutes: 5
         run: npx tsx --test --test-timeout=60000 --test-force-exit tests/service-e2e.test.ts
