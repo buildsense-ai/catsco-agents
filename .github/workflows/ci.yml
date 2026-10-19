@@ -46,3 +46,7 @@ jobs:
       - name: Service runtime tests (e2e)
         timeout-minutes: 5
         run: npx tsx --test --test-timeout=60000 --test-force-exit tests/service-e2e.test.ts
+      # MCP 工具桥与 run 回执路由器（无网络依赖的纯单测；桥测试此前只在本地跑）。
+      - name: MCP bridge & run-receipt tests
+        timeout-minutes: 5
+        run: npx tsx --test --test-timeout=60000 --test-force-exit tests/catsco-mcp-tool-bridge.test.ts tests/run-receipts.test.ts

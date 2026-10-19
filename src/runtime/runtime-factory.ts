@@ -13,6 +13,7 @@ import { PathResolver } from '../utils/path-resolver';
 import { CatsLogMemoryProvider } from '../utils/catslog-memory-provider';
 import { CatsCoMcpToolBridge } from '../mcp/mcp-tool-bridge';
 import { createSdkMcpBridgeClientFactory } from '../mcp/mcp-sdk-client';
+import { ServiceRunReceiptRouter } from '../mcp/run-receipts';
 import { createCatsCoLocalConfigService } from '../catscompany/local-config';
 import {
   RuntimeProfile,
@@ -96,7 +97,8 @@ export class RuntimeFactory {
     const toolManager = new ToolManager(profile.workingDirectory, {}, {
       enabledToolNames: profile.tools.enabled,
     });
-    const mcpToolBridge = this.createMcpToolBridge(toolManager, profile);
+    const runReceiptRouter = new ServiceRunReceiptRouter();
+    const mcpToolBridge = this.createMcpToolBridge(toolManager, profile, runReceiptRouter);
 
     return {
       aiService,
@@ -108,6 +110,7 @@ export class RuntimeFactory {
       },
       ...(catslogMemory ? { catslogMemory } : {}),
       ...(mcpToolBridge ? { mcpToolBridge } : {}),
+      serviceRunReceiptRouter: runReceiptRouter,
       toolManager,
       skillManager: new SkillManager(),
       turnSkillSnapshotStore: this.createTurnSkillSnapshotStore(),
@@ -126,6 +129,7 @@ export class RuntimeFactory {
   private static createMcpToolBridge(
     toolManager: ToolManager,
     profile: RuntimeProfile,
+    runReceiptRouter?: ServiceRunReceiptRouter,
   ): CatsCoMcpToolBridge | undefined {
     if (process.env.CATSCO_MCP_TOOL_BRIDGE === '0') return undefined;
     try {
@@ -145,6 +149,18 @@ export class RuntimeFactory {
           if (!url) return null;
           return { url, token };
         },
+        // 长任务仍 running 时登记待补 run；平台回执到达后由宿主唤醒下一回合（设计 §19）。
+        ...(runReceiptRouter
+          ? {
+              onRunPending: (info: {
+                runId: string;
+                serviceSessionId: string;
+                toolName: string;
+                conversationSessionKey?: string;
+                conversationTopic?: string;
+              }) => runReceiptRouter.registerPendingRun(info),
+            }
+          : {}),
       });
       bridge.refreshInBackground();
       return bridge;

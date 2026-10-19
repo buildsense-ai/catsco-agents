@@ -11,7 +11,7 @@
  * 刷新策略：fire-and-forget 后台同步（绝不阻塞对话轮次），按 diff 注册/注销远端工具。
  */
 import { Logger } from '../utils/logger';
-import type { Tool, ToolDefinition, ToolExecutionResult, ToolParameter } from '../types/tool';
+import type { Tool, ToolDefinition, ToolExecutionContext, ToolExecutionResult, ToolParameter } from '../types/tool';
 
 export interface McpBridgeToolInfo {
   name: string;
@@ -72,6 +72,17 @@ export interface McpToolBridgeOptions {
   /** run 句柄轮询总时长（默认 90s）；<=0 关闭自动轮询。 */
   runPollTimeoutMs?: number;
   runPollIntervalMs?: number;
+  /**
+   * 「放弃轮询后」的待补登记回调（设计 §19）：任务仍 running 时调用，
+   * 宿主把 run 记入回执路由器；平台推达终态回执时可唤醒下一回合。
+   */
+  onRunPending?: (info: {
+    runId: string;
+    serviceSessionId: string;
+    toolName: string;
+    conversationSessionKey?: string;
+    conversationTopic?: string;
+  }) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -100,6 +111,7 @@ export class CatsCoMcpToolBridge {
   private readonly runStatusToolName: string;
   private readonly runPollTimeoutMs: number;
   private readonly runPollIntervalMs: number;
+  private readonly onRunPending?: McpToolBridgeOptions['onRunPending'];
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -119,6 +131,7 @@ export class CatsCoMcpToolBridge {
     this.runStatusToolName = options.runStatusToolName ?? DEFAULT_RUN_STATUS_TOOL;
     this.runPollTimeoutMs = options.runPollTimeoutMs ?? DEFAULT_RUN_POLL_TIMEOUT_MS;
     this.runPollIntervalMs = options.runPollIntervalMs ?? DEFAULT_RUN_POLL_INTERVAL_MS;
+    this.onRunPending = options.onRunPending;
     this.now = options.now ?? Date.now;
     this.sleep = options.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)));
   }
@@ -242,12 +255,22 @@ export class CatsCoMcpToolBridge {
   private createRemoteTool(definition: ToolDefinition): Tool {
     return {
       definition,
-      execute: (args: any) => this.executeRemoteTool(definition.name, toArgsRecord(args)),
+      // 把本机对话路由（本地会话 key / 平台 topic）透传到执行链，供「放弃轮询后的
+      // 待补登记」使用——回执到达时才能把唤醒注记放回正确的会话。
+      execute: (args: any, context?: ToolExecutionContext) =>
+        this.executeRemoteTool(definition.name, toArgsRecord(args), {
+          ...(context?.sessionId ? { conversationSessionKey: context.sessionId } : {}),
+          ...(context?.channel?.chatId ? { conversationTopic: context.channel.chatId } : {}),
+        }),
     };
   }
 
   /** 执行远端工具的完整链路：连接 → call →（running 时轮询）→ 映射结果。 */
-  async executeRemoteTool(toolName: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  async executeRemoteTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    route?: { conversationSessionKey?: string; conversationTopic?: string },
+  ): Promise<ToolExecutionResult> {
     const endpoint = this.resolveEndpoint();
     if (!endpoint) {
       return {
@@ -268,6 +291,22 @@ export class CatsCoMcpToolBridge {
       let envelope = parseServiceRunEnvelope(first.structured);
       if (toolName !== this.runStatusToolName && this.runPollTimeoutMs > 0) {
         envelope = await this.pollRunUntilTerminal(client, envelope);
+      }
+      // 仍处于 running（含轮询超时）：登记待补 run——平台在 run 终态时推回执，
+      // 届时可唤醒宿主注入下一回合（设计 §19）。拉取永远是真相通道。
+      if (toolName !== this.runStatusToolName && envelope?.status === 'running' && envelope.run_id) {
+        try {
+          this.onRunPending?.({
+            runId: envelope.run_id,
+            serviceSessionId: envelope.session_id ?? '',
+            toolName,
+            ...(route?.conversationSessionKey ? { conversationSessionKey: route.conversationSessionKey } : {}),
+            ...(route?.conversationTopic ? { conversationTopic: route.conversationTopic } : {}),
+          });
+        } catch (error: any) {
+          // 登记失败不影响本轮交付。
+          Logger.warning(`CatsCo 工具桥待补登记失败: ${error?.message ?? error}`);
+        }
       }
       return formatEnvelopeResult(envelope, first.contentText, toolName);
     } catch (error: any) {

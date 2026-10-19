@@ -115,6 +115,11 @@ export interface AgentServices {
    * 可选：仅交互运行时装配；刷新为后台 fire-and-forget。
    */
   mcpToolBridge?: import('../mcp/mcp-tool-bridge').CatsCoMcpToolBridge;
+  /**
+   * 定制应用 run 生命周期回执路由器（设计 §19）：长任务回执 → 唤醒注记注入。
+   * 可选：仅装配了工具桥的交互运行时携带。
+   */
+  serviceRunReceiptRouter?: import('../mcp/run-receipts').ServiceRunReceiptRouter;
   toolManager: ToolManager;
   skillManager: SkillManager;
   /** Optional so tests and embedded legacy runtimes keep their existing path. */

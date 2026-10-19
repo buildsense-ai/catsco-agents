@@ -544,6 +544,10 @@ export class CatsClient extends EventEmitter {
       this.handleThinToolRpcMessage(msg.thin_tool_rpc);
     } else if (msg.skill_mutation_grant) {
       this.handleSkillMutationGrantMessage(msg.skill_mutation_grant);
+    } else if (msg.service_run_receipt) {
+      // 定制应用 run 生命周期回执（设计 §19 / §3.3-2）：跟账号投递，顶层字段。
+      // 只负责把载荷交出去（路由/去重/唤醒在 ServiceRunReceiptRouter）。
+      this.emit('service_run_receipt', msg.service_run_receipt);
     } else if (msg.data) {
       Logger.info(
         `[CatsCompany] 收到消息: topic=${msg.data.topic || '-'}, ` +

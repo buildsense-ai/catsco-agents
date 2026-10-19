@@ -217,6 +217,71 @@ describe('CatsCo MCP 工具桥', () => {
     assert.deepStrictEqual(callLog, ['catsco_hello', 'catsco_run_status']);
   });
 
+  test('running 超时：登记待补 run，带对话路由（onRunPending）', async () => {
+    const pending: Array<Record<string, unknown>> = [];
+    const manager = new ToolManager(process.cwd(), {}, { enabledToolNames: [] });
+    const bridge = new CatsCoMcpToolBridge({
+      toolManager: manager,
+      createClient: () =>
+        new FakeClient(
+          () => [toolInfo('catsco_hello')],
+          () => ({
+            isError: false,
+            contentText: 'run=r7 session=s7 status=running',
+            structured: { status: 'running', run_id: 'r7', session_id: 's7' },
+          }),
+        ),
+      resolveEndpoint: () => ({ url: 'https://app.catsco.cc/api/mcp', token: 't' }),
+      refreshIntervalMs: 0,
+      runPollTimeoutMs: 1,
+      runPollIntervalMs: 1,
+      sleep: async () => {},
+      onRunPending: info => pending.push(info),
+    });
+    await bridge.refresh();
+
+    const routedContext = {
+      sessionId: 'catscompany:p2p_7_43',
+      channel: { chatId: 'p2p_7_43', reply: async () => {} },
+    } as unknown as ToolExecutionContext;
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, routedContext);
+    assert.equal(result.ok, true);
+    // 轮询超时仍 running：登记一条待补（含本地会话路由 + 平台 session）。
+    assert.equal(pending.length, 1);
+    assert.deepStrictEqual(pending[0], {
+      runId: 'r7',
+      serviceSessionId: 's7',
+      toolName: 'catsco_hello',
+      conversationSessionKey: 'catscompany:p2p_7_43',
+      conversationTopic: 'p2p_7_43',
+    });
+  });
+
+  test('completed 不触发 onRunPending（只有仍在运行才登记）', async () => {
+    const pending: Array<Record<string, unknown>> = [];
+    const manager = new ToolManager(process.cwd(), {}, { enabledToolNames: [] });
+    const bridge = new CatsCoMcpToolBridge({
+      toolManager: manager,
+      createClient: () =>
+        new FakeClient(
+          () => [toolInfo('catsco_hello')],
+          () => ({
+            isError: false,
+            contentText: 'run=r8 session=s8 status=completed',
+            structured: { status: 'completed', run_id: 'r8', session_id: 's8', output: { text: '好' } },
+          }),
+        ),
+      resolveEndpoint: () => ({ url: 'https://app.catsco.cc/api/mcp', token: 't' }),
+      refreshIntervalMs: 0,
+      runPollTimeoutMs: 0,
+      onRunPending: info => pending.push(info),
+    });
+    await bridge.refresh();
+
+    await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    assert.equal(pending.length, 0);
+  });
+
   test('catsco_run_status 自身不做轮询（避免自旋）', async () => {
     const callLog: string[] = [];
     const { bridge, manager } = createHarness({
