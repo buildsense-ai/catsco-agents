@@ -254,6 +254,56 @@ describe('CatsCo MCP 工具桥', () => {
     assert.match(failure.message, /未添加该 Agent 工具/);
   });
 
+  test('isError「码: 中文说明」（session_busy）：errorCode 取裸码，message 走策展文案', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => ({
+        isError: true,
+        contentText: 'session_busy: 同会话已有进行中的 run（可先查询 catsco_run_status）',
+      }),
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    assert.equal(result.ok, false);
+    const failure = result as { errorCode: string; message: string };
+    assert.equal(failure.errorCode, 'session_busy');
+    assert.match(failure.message, /已有进行中的运行/);
+    assert.doesNotMatch(failure.message, /^远端工具返回错误/);
+  });
+
+  test('isError「码: 中文说明」（agent_not_subscribed）：映射为可操作的重新添加指引', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => ({
+        isError: true,
+        contentText: 'agent_not_subscribed: 该应用已从你的清单中移除（可在应用目录重新添加后再调用）',
+      }),
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    assert.equal(result.ok, false);
+    const failure = result as { errorCode: string; message: string };
+    assert.equal(failure.errorCode, 'agent_not_subscribed');
+    assert.match(failure.message, /重新添加/);
+  });
+
+  test('isError 未知码带说明：errorCode 取裸码，message 保留码与说明', async () => {
+    const { bridge, manager } = createHarness({
+      listTools: () => [toolInfo('catsco_hello')],
+      callTool: () => ({ isError: true, contentText: 'some_new_code: 请稍后再试' }),
+    });
+    await bridge.refresh();
+
+    const result = await manager.getTool('catsco_hello')!.execute({ input: {} }, context);
+    assert.equal(result.ok, false);
+    const failure = result as { errorCode: string; message: string };
+    assert.equal(failure.errorCode, 'some_new_code');
+    assert.match(failure.message, /some_new_code/);
+    assert.match(failure.message, /请稍后再试/);
+  });
+
   test('failed 状态映射为 ok:false，携带 error 明细', async () => {
     const { bridge, manager } = createHarness({
       listTools: () => [toolInfo('catsco_hello')],
