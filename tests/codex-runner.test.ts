@@ -87,7 +87,7 @@ test('buildCodexInvocation: exec 基础形状（json/skip-git/sandbox/model/extr
   ]);
 });
 
-test('buildCodexInvocation: resume 形状（含 thread id，不带 -m/sandbox）', () => {
+test('buildCodexInvocation: resume 形状（含 thread id 与 -c 沙箱覆盖，不带 --sandbox/-C）', () => {
   const inv = buildCodexInvocation(
     { command: 'codex' },
     { mode: 'resume', prompt: '继续', threadId: 'th_9', model: 'gpt-x', sandbox: 'workspace-write' },
@@ -97,6 +97,8 @@ test('buildCodexInvocation: resume 形状（含 thread id，不带 -m/sandbox）
     'resume',
     '--json',
     '--skip-git-repo-check',
+    '-c',
+    'sandbox_mode=workspace-write',
     'th_9',
     '继续',
   ]);
