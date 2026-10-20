@@ -320,6 +320,41 @@ export function buildCodexProcessEnv(codex: CodexExecEnv): Record<string, string
   return env;
 }
 
+/**
+ * 会话工作区清理：删除 workspaceRoot 下 mtime 早于 ttlMs 的目录。
+ * 运行中的会话目录 mtime 会被持续刷新，不会被误删；ttlMs<=0 直接跳过（关闭）。
+ */
+export function pruneCodexWorkspaces(
+  workspaceRoot: string,
+  ttlMs: number,
+  now: number = Date.now(),
+): { removed: string[]; failed: Array<{ name: string; error: string }> } {
+  const result: { removed: string[]; failed: Array<{ name: string; error: string }> } = {
+    removed: [],
+    failed: [],
+  };
+  if (ttlMs <= 0) return result;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(workspaceRoot, { withFileTypes: true });
+  } catch {
+    return result; // 根目录不存在：无事可做
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(workspaceRoot, entry.name);
+    try {
+      const stat = fs.statSync(dir);
+      if (now - stat.mtimeMs < ttlMs) continue;
+      fs.rmSync(dir, { recursive: true, force: true });
+      result.removed.push(entry.name);
+    } catch (error) {
+      result.failed.push({ name: entry.name, error: (error as Error).message });
+    }
+  }
+  return result;
+}
+
 /** 历史摘要前缀（resume 失效回退用）：最近 10 条消息。 */
 export function buildHistoryRecap(
   history: Array<{ role: string; content: string }>,
@@ -406,7 +441,9 @@ export async function runCodexClaimedRun(
 
   const timeoutMs = codex.timeoutMsOverride ?? Math.max(1000, pkg.behavior.maxRunSeconds * 1000);
   const sandbox = pkg.runner?.sandbox ?? codex.sandbox ?? 'workspace-write';
-  const model = pkg.runner?.model ?? pkg.model.primary.model;
+  // 模型：仅包显式声明 runner.model 时才 -m 覆盖；不回落 manifest.model——那是平台模型名，
+  // codex CLI 不认识；未声明时用 CODEX_HOME/config.toml 的默认模型。
+  const model = pkg.runner?.model;
   const extraArgs = [...(codex.extraArgs ?? []), ...(pkg.runner?.extraArgs ?? [])];
   const processEnv = buildCodexProcessEnv(codex);
 
@@ -416,7 +453,7 @@ export async function runCodexClaimedRun(
       prompt,
       ...(threadId ? { threadId } : {}),
       sandbox,
-      ...(mode === 'exec' ? { model } : {}),
+      ...(mode === 'exec' && model ? { model } : {}),
       ...(extraArgs.length > 0 ? { extraArgs } : {}),
     });
     return runCodex({

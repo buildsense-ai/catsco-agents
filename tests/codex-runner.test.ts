@@ -8,6 +8,7 @@ import {
   parseCodexEventLine,
   pickCodexFinalText,
   progressNoteForEvent,
+  pruneCodexWorkspaces,
   runCodex,
   runCodexClaimedRun,
   CodexExecEnv,
@@ -66,6 +67,39 @@ test('progressNoteForEvent: agent_message→delta，command/file_change→tool�
   assert.match(String(fileNote?.name), /文件/);
   assert.equal(progressNoteForEvent({ type: 'turn.started' }), null);
   assert.equal(progressNoteForEvent({ type: 'item.completed', item: { type: 'reasoning' } }), null);
+});
+
+test('pruneCodexWorkspaces: 超 TTL 目录删除、新鲜目录与普通文件保留、TTL<=0 关闭', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-prune-'));
+  try {
+    const oldDir = path.join(root, 'sess_old');
+    const freshDir = path.join(root, 'sess_fresh');
+    fs.mkdirSync(oldDir, { recursive: true });
+    fs.mkdirSync(freshDir, { recursive: true });
+    fs.writeFileSync(path.join(oldDir, 'a.txt'), 'x');
+    const looseFile = path.join(root, 'notes.txt');
+    fs.writeFileSync(looseFile, 'keep');
+    const now = Date.now();
+    const old = new Date(now - 30 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(oldDir, old, old);
+
+    const ttlMs = 14 * 24 * 60 * 60 * 1000;
+    const result = pruneCodexWorkspaces(root, ttlMs, now);
+    assert.deepEqual(result.removed, ['sess_old']);
+    assert.equal(fs.existsSync(oldDir), false);
+    assert.equal(fs.existsSync(freshDir), true);
+    assert.equal(fs.existsSync(looseFile), true);
+
+    // TTL<=0：关闭（不删）
+    const disabled = pruneCodexWorkspaces(root, 0, now);
+    assert.deepEqual(disabled.removed, []);
+    assert.equal(fs.existsSync(freshDir), true);
+
+    // 根目录不存在：不抛错
+    assert.deepEqual(pruneCodexWorkspaces(path.join(root, 'nope'), ttlMs, now).removed, []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('buildCodexInvocation: exec 基础形状（json/skip-git/sandbox/model/extraArgs/prompt）', () => {
@@ -405,9 +439,41 @@ test('runCodexClaimedRun 全新轮：工作区/env/进度/checkpoint(codex.threa
     assert.equal(recorded.env.HTTPS_PROXY, env.proxy);
     assert.ok(recorded.argv.includes('exec'));
     assert.ok(!recorded.argv.includes('resume'));
+    // 包未声明 runner.model → 不传 -m（用 codex config.toml 默认模型），绝不回落平台模型名
+    assert.ok(!recorded.argv.includes('-m'), `argv=${recorded.argv}`);
+    assert.ok(!recorded.argv.includes('gpt-x'), `argv=${recorded.argv}`);
     const agentsFile = path.join(env.workspaceRoot, 'sess_cd1', 'AGENTS.md');
     assert.ok(fs.existsSync(agentsFile), 'AGENTS.md 应在首轮物化');
     assert.ok(fs.readFileSync(agentsFile, 'utf8').includes('unused-for-codex-runner'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runCodexClaimedRun 显式 runner.model：-m 覆盖生效', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-claimed-'));
+  try {
+    const fake = writeFakeCodex(root);
+    const recordFile = path.join(root, 'record.jsonl');
+    const env = makeCodexEnv(root, fake);
+    const record: RecordedCall[] = [];
+    const platform = fakePlatform(record);
+
+    const outcome = await runCodexClaimedRun(
+      makeRun({ run_id: 'run_model1', session_id: 'sess_model1' }),
+      makePkg({ runner: { type: 'codex', model: 'gpt-5.6-sol' } }),
+      platform,
+      {
+        codex: { ...env, env: { FAKE_MODE: 'ok', FAKE_RECORD: recordFile } },
+        progressThrottleMs: 0,
+      },
+    );
+
+    assert.equal(outcome, 'completed');
+    const recorded = JSON.parse(fs.readFileSync(recordFile, 'utf8').trim().split('\n')[0]);
+    const idx = recorded.argv.indexOf('-m');
+    assert.ok(idx >= 0, `argv=${recorded.argv}`);
+    assert.equal(recorded.argv[idx + 1], 'gpt-5.6-sol');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
