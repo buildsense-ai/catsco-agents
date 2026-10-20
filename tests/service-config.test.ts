@@ -18,6 +18,8 @@ test('service config defaults and clamps', () => {
   assert.ok(c.instanceId.length > 0);
   // 云端包缓存默认=agentsDir 兄弟目录 service-packages
   assert.equal(c.packageCacheDir.endsWith('service-packages'), true);
+  // codex 工作区保留天数默认 14
+  assert.equal(c.codexWorkspaceTtlDays, 14);
 });
 
 test('service config rejects missing required values', () => {
@@ -58,4 +60,18 @@ test('service config clamps ranges and honors overrides', () => {
     CATS_SERVICE_PACKAGE_CACHE_DIR: '/data/pkgs',
   });
   assert.equal(cache.packageCacheDir, '/data/pkgs');
+
+  // codex 工作区 TTL：可关闭（0）与上限 clamp（365）
+  const ttlOff = loadServiceConfig({
+    CATS_SERVICE_PLATFORM_BASE_URL: 'http://x',
+    CATS_SERVICE_INSTANCE_TOKEN: 't',
+    CATS_CODEX_WORKSPACE_TTL_DAYS: '0',
+  });
+  assert.equal(ttlOff.codexWorkspaceTtlDays, 0);
+  const ttlHigh = loadServiceConfig({
+    CATS_SERVICE_PLATFORM_BASE_URL: 'http://x',
+    CATS_SERVICE_INSTANCE_TOKEN: 't',
+    CATS_CODEX_WORKSPACE_TTL_DAYS: '9999',
+  });
+  assert.equal(ttlHigh.codexWorkspaceTtlDays, 365);
 });

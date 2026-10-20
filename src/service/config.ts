@@ -24,6 +24,8 @@ export interface ServiceConfig {
   codexProxy: string;
   /** codex 执行后端：默认沙箱档位。 */
   codexSandbox: 'read-only' | 'workspace-write';
+  /** codex 执行后端：会话工作区保留天数（0=关闭定期清理）。 */
+  codexWorkspaceTtlDays: number;
 }
 
 const DEFAULTS = {
@@ -35,6 +37,7 @@ const DEFAULTS = {
   codexCommand: 'codex',
   codexHomeDir: '/opt/catsco-agents/env/codex-home',
   codexWorkspaceRoot: '/opt/catsco-agents/workspaces',
+  codexWorkspaceTtlDays: 14,
 } as const;
 
 function clampInt(raw: string | undefined, fallback: number, min: number, max: number): number {
@@ -84,5 +87,11 @@ export function loadServiceConfig(env: Record<string, string | undefined>): Serv
     codexWorkspaceRoot: (env.CATS_CODEX_WORKSPACE_ROOT ?? '').trim() || DEFAULTS.codexWorkspaceRoot,
     codexProxy: (env.CATS_CODEX_PROXY ?? '').trim(),
     codexSandbox: (env.CATS_CODEX_SANDBOX ?? '').trim() === 'read-only' ? 'read-only' : 'workspace-write',
+    codexWorkspaceTtlDays: clampInt(
+      env.CATS_CODEX_WORKSPACE_TTL_DAYS,
+      DEFAULTS.codexWorkspaceTtlDays,
+      0,
+      365,
+    ),
   };
 }

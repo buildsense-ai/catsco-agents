@@ -1,6 +1,7 @@
 import { AgentPackage, loadAgentPackage } from './agent-package';
 import { ensureAgentBundleCached } from './agent-bundle';
 import { CheckpointCache } from './checkpoint';
+import { pruneCodexWorkspaces } from './codex-runner';
 import { ServiceConfig } from './config';
 import { InstanceMetricsTracker } from './metrics';
 import { ModelClient } from './model-client';
@@ -64,7 +65,12 @@ export class ServiceDaemon {
   /** 主循环：直到 shutdown 后退出（进程收到 SIGTERM 由 main 触发 shutdown）。 */
   async run(): Promise<void> {
     let nextInstanceHeartbeatAt = 0;
+    let nextWorkspacePruneAt = 0;
     while (!this.shuttingDown) {
+      if (Date.now() >= nextWorkspacePruneAt) {
+        nextWorkspacePruneAt = Date.now() + WORKSPACE_PRUNE_INTERVAL_MS;
+        this.pruneWorkspaces();
+      }
       const capacity = Math.min(this.deps.config.concurrency - this.active.size, 4);
       if (capacity > 0) {
         let runs: ClaimedRun[] = [];
@@ -182,12 +188,34 @@ export class ServiceDaemon {
     return pkg;
   }
 
+  /** 会话工作区定期清理（TTL 来自 CATS_CODEX_WORKSPACE_TTL_DAYS，0=关闭）。 */
+  private pruneWorkspaces(): void {
+    const ttlMs = this.deps.config.codexWorkspaceTtlDays * 24 * 60 * 60 * 1000;
+    if (ttlMs <= 0) return;
+    try {
+      const { removed, failed } = pruneCodexWorkspaces(this.deps.config.codexWorkspaceRoot, ttlMs);
+      if (removed.length > 0) {
+        console.log(
+          `service daemon workspace prune: removed ${removed.length} (${removed.slice(0, 5).join(',')})`,
+        );
+      }
+      for (const item of failed.slice(0, 3)) {
+        console.warn(`service daemon workspace prune failed ${item.name}: ${item.error}`);
+      }
+    } catch (error) {
+      console.warn(`service daemon workspace prune error: ${(error as Error).message}`);
+    }
+  }
+
   private async waitForIdle(): Promise<void> {
     while (this.active.size > 0) {
       await Promise.allSettled([...this.active.values()].map((a) => a.promise));
     }
   }
 }
+
+/** 工作区清理扫描间隔（启动即扫一次）。 */
+const WORKSPACE_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
